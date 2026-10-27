@@ -1,0 +1,11 @@
+.git
+.env
+!admin/.env
+.env.local
+data
+admin/node_modules
+admin/dist
+test-results
+.tools
+*.exe
+*.log

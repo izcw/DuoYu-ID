@@ -1,0 +1,10 @@
+node_modules
+.DS_Store
+dist
+dist-ssr
+*.local
+.cursorrules
+
+# Auto-generated files
+# Keep generated type declarations so vue-tsc works on a fresh checkout.
+.auto-import.json

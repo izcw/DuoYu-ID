@@ -1,0 +1,391 @@
+package main
+
+import (
+	"context"
+	"crypto/rsa"
+	"embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"html/template"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/mail"
+	"net/netip"
+	"net/url"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/zitadel/oidc/v3/pkg/op"
+)
+
+//go:embed schema.sql templates/* migrations/*
+var assets embed.FS
+
+type Server struct {
+	db            *pgxpool.Pool
+	proxies       []netip.Prefix
+	key           [32]byte
+	origin, data  string
+	dev           bool
+	signing       *rsa.PrivateKey
+	provider      *op.Provider
+	wa            *webauthn.WebAuthn
+	templates     *template.Template
+	mailTransport func(MailMessage) error // Replaced only by isolated tests; production uses SMTP.
+}
+type User struct {
+	ID      string    `json:"id"`
+	Email   string    `json:"email"`
+	Name    string    `json:"name"`
+	Avatar  string    `json:"avatar"`
+	Admin   bool      `json:"admin"`
+	Enabled bool      `json:"enabled"`
+	Created time.Time `json:"created_at"`
+}
+type sessionContextKey struct{}
+
+func env(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}
+func main() {
+	s, e := newServer()
+	if e != nil {
+		slog.Error("startup failed", "error", e)
+		os.Exit(1)
+	}
+	defer s.db.Close()
+	if os.Getenv("DUOYU_MIGRATE_ONLY") == "true" {
+		slog.Info("database migrations complete")
+		return
+	}
+	h := s.routes()
+	srv := &http.Server{Addr: env("DUOYU_ADDR", "127.0.0.1:8080"), Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var workers sync.WaitGroup
+	role := env("DUOYU_ROLE", "combined")
+	if role != "api" && role != "worker" && role != "combined" {
+		slog.Error("invalid DUOYU_ROLE")
+		return
+	}
+	if role != "api" {
+		s.startMailWorkers(ctx, &workers)
+		s.startLogoutWorker(ctx, &workers)
+		s.startMaintenance(ctx, &workers)
+	}
+	defer func() { stop(); workers.Wait() }()
+	if role == "worker" {
+		<-ctx.Done()
+		return
+	}
+	go func() {
+		<-ctx.Done()
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(c)
+	}()
+	slog.Info("Duoyu ID ready", "origin", s.origin)
+	if e = srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
+		slog.Error("server stopped", "error", e)
+	}
+}
+func newServer() (*Server, error) {
+	s := &Server{origin: strings.TrimRight(env("DUOYU_ORIGIN", "http://localhost:8080"), "/"), data: env("DUOYU_DATA_DIR", "data"), dev: os.Getenv("DUOYU_DEV") == "true"}
+	var e error
+	s.proxies, e = parseProxies(os.Getenv("DUOYU_TRUSTED_PROXIES"))
+	if e != nil {
+		return nil, e
+	}
+	u, e := url.Parse(s.origin)
+	if e != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("DUOYU_ORIGIN must be an origin")
+	}
+	if !s.dev && u.Scheme != "https" {
+		return nil, errors.New("HTTPS required")
+	}
+	if s.dev && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
+		return nil, errors.New("development mode is localhost only")
+	}
+	key, e := hex.DecodeString(os.Getenv("DUOYU_SECRET"))
+	if e != nil || len(key) != 32 {
+		return nil, errors.New("DUOYU_SECRET requires 64 random hex characters")
+	}
+	copy(s.key[:], key)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	s.db, e = pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	if e != nil {
+		return nil, e
+	}
+	if e = s.db.Ping(ctx); e != nil {
+		return nil, e
+	}
+	if e = s.migrate(ctx); e != nil {
+		return nil, e
+	}
+	if os.Getenv("DUOYU_MIGRATE_ONLY") == "true" {
+		return s, nil
+	}
+	if e = os.MkdirAll(filepath.Join(s.data, "avatars"), 0700); e != nil {
+		return nil, e
+	}
+	if e = s.loadSigningKey(); e != nil {
+		return nil, e
+	}
+	s.templates = template.Must(template.ParseFS(assets, "templates/*.html"))
+	s.wa, e = webauthn.New(&webauthn.Config{RPDisplayName: "多鱼账号", RPID: u.Hostname(), RPOrigins: []string{s.origin}})
+	if e != nil {
+		return nil, e
+	}
+	opts := []op.Option{}
+	if s.dev {
+		opts = append(opts, op.WithAllowInsecure())
+	}
+	s.provider, e = op.NewProvider(&op.Config{CryptoKey: s.key, CodeMethodS256: true, GrantTypeRefreshToken: true, BackChannelLogoutSupported: true, BackChannelLogoutSessionSupported: true, DefaultLogoutRedirectURI: s.origin + "/login"}, s, op.StaticIssuer(s.origin), opts...)
+	if e != nil {
+		return nil, e
+	}
+	if p := os.Getenv("DUOYU_ADMIN_PASSWORD"); p != "" {
+		if e = validPassword(p); e != nil {
+			return nil, e
+		}
+		email := normalizeEmail(os.Getenv("DUOYU_ADMIN_EMAIL"))
+		if email == "" {
+			return nil, errors.New("valid admin email required")
+		}
+		_, e = s.db.Exec(ctx, "INSERT INTO users(id,email,name,password_hash,admin) VALUES($1,$2,'管理员',$3,true) ON CONFLICT(email) DO NOTHING", randomID(), email, hashPassword(p))
+		if e != nil {
+			return nil, e
+		}
+	}
+	return s, nil
+}
+func (s *Server) routes() http.Handler {
+	m := http.NewServeMux()
+	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if s.db.Ping(r.Context()) != nil {
+			fail(w, 503, "数据库不可用")
+			return
+		}
+		ok(w, map[string]bool{"healthy": true})
+	})
+	m.HandleFunc("GET /login", s.loginPage)
+	m.HandleFunc("POST /api/auth/code", s.sendCode)
+	m.HandleFunc("POST /api/auth/login", s.login)
+	m.HandleFunc("POST /api/auth/reset", s.resetPassword)
+	m.HandleFunc("POST /api/auth/logout", s.logout)
+	m.HandleFunc("GET /api/auth/session", s.sessionStatus)
+	m.HandleFunc("POST /api/service/mail", s.serviceMail)
+	m.HandleFunc("GET /api/service/mail/{id}", s.serviceMailStatus)
+	m.HandleFunc("GET /api/admin/mail", s.adminMail)
+	m.HandleFunc("GET /api/me", s.me)
+	m.HandleFunc("GET /api/user/info", s.artUser)
+	m.HandleFunc("PATCH /api/me", s.profile)
+	m.HandleFunc("POST /api/me/password", s.changePassword)
+	m.HandleFunc("POST /api/me/email", s.changeEmail)
+	m.HandleFunc("POST /api/me/avatar", s.avatar)
+	m.HandleFunc("GET /avatars/{id}", s.serveAvatar)
+	m.HandleFunc("GET /api/me/sessions", s.sessions)
+	m.HandleFunc("DELETE /api/me/sessions/{id}", s.revokeSession)
+	m.HandleFunc("GET /api/auth/context", s.authContext)
+	m.HandleFunc("POST /api/auth/continue", s.completeAuth)
+	m.HandleFunc("GET /api/admin/overview", s.overview)
+	m.HandleFunc("GET /api/admin/diagnostics", s.diagnostics)
+	m.HandleFunc("GET /api/admin/logout-events", func(w http.ResponseWriter, r *http.Request) {
+		if _, yes := s.require(w, r, true); !yes {
+			return
+		}
+		s.queryList(w, r, "SELECT id,app_id,user_id,created_at,next_attempt,attempts,status FROM logout_jobs ORDER BY id DESC LIMIT 200")
+	})
+	m.HandleFunc("GET /api/admin/users", s.users)
+	m.HandleFunc("PATCH /api/admin/users/{id}", s.updateUser)
+	m.HandleFunc("POST /api/admin/users/{id}/revoke", s.adminRevoke)
+	m.HandleFunc("GET /api/admin/apps", s.apps)
+	m.HandleFunc("POST /api/admin/apps", s.saveApp)
+	m.HandleFunc("PUT /api/admin/apps/{id}", s.saveApp)
+	m.HandleFunc("POST /api/admin/apps/{id}/rotate", s.rotateApp)
+	m.HandleFunc("GET /api/admin/apps/{id}/grants", s.listGrants)
+	m.HandleFunc("PUT /api/admin/apps/{id}/grants", s.setGrants)
+	m.HandleFunc("GET /api/admin/audit", s.auditList)
+	m.HandleFunc("GET /api/admin/keys", s.keys)
+	m.HandleFunc("POST /api/admin/keys", s.createKey)
+	m.HandleFunc("DELETE /api/admin/keys/{id}", s.revokeKey)
+	m.HandleFunc("GET /api/admin/settings", s.settings)
+	m.HandleFunc("GET /api/admin/analytics", s.analytics)
+	m.HandleFunc("GET /api/admin/apps/{id}", s.adminAppDetail)
+	m.HandleFunc("GET /api/admin/users/{id}", s.adminUserDetail)
+	m.HandleFunc("GET /api/admin/keys/{id}", s.adminKeyDetail)
+	m.HandleFunc("PUT /api/admin/keys/{id}", s.updateKey)
+	m.HandleFunc("GET /api/admin/apps/{id}/users", s.appUsers)
+	m.HandleFunc("PUT /api/admin/settings", s.saveSettings)
+	m.HandleFunc("GET /api/admin/mail-preview", s.mailPreview)
+	m.HandleFunc("GET /api/service/app", s.serviceApp)
+	m.HandleFunc("GET /api/me/passkeys", s.listPasskeys)
+	m.HandleFunc("POST /api/me/passkeys/begin", s.beginPasskey)
+	m.HandleFunc("POST /api/me/passkeys/finish", s.finishPasskey)
+	m.HandleFunc("DELETE /api/me/passkeys/{id}", s.deletePasskey)
+	m.HandleFunc("POST /api/auth/passkey/begin", s.beginPasskeyLogin)
+	m.HandleFunc("POST /api/auth/passkey/finish", s.finishPasskeyLogin)
+	m.HandleFunc("POST /api/auth/qr", s.createQR)
+	m.HandleFunc("POST /api/auth/qr/{id}/poll", s.pollQR)
+	m.HandleFunc("POST /api/auth/qr/{id}/cancel", s.cancelQR)
+	m.HandleFunc("POST /api/auth/qr/context", s.qrContext)
+	m.HandleFunc("POST /api/auth/qr/approve", s.approveQR)
+	m.HandleFunc("GET /scan", s.scanPage)
+	m.HandleFunc("GET /api/openapi.json", s.openapi)
+	m.Handle("/oidc/", s.provider)
+	m.Handle("/.well-known/", s.provider)
+	// OIDC endpoints are discovered by clients; do not guess paths in client code.
+	for _, p := range []string{"/authorize", "/authorize/", "/oauth/", "/userinfo", "/keys", "/end_session", "/revoke", "/introspect"} {
+		m.Handle(p, s.provider)
+	}
+	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			fail(w, 404, "接口不存在")
+			return
+		}
+		if r.Method != "GET" && r.Method != "HEAD" {
+			http.NotFound(w, r)
+			return
+		}
+		http.FileServer(http.Dir("admin/dist")).ServeHTTP(w, r)
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", randomID())
+		r = s.withClientIP(r)
+		if c, e := r.Cookie("duoyu_session"); e == nil {
+			r = r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, digest(c.Value)))
+		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/login" {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		if !s.dev {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		// Server-to-server sending authenticates exclusively with a scoped Bearer key.
+		serviceMail := r.Method == "POST" && r.URL.Path == "/api/service/mail"
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != "GET" && r.Method != "HEAD" && !serviceMail {
+			if r.Header.Get("Origin") != s.origin || r.Header.Get("X-Duoyu-Request") != "1" {
+				fail(w, 403, "请求来源不受信任")
+				return
+			}
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 3<<20)
+		m.ServeHTTP(w, r)
+	})
+}
+func ok(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": v, "msg": "成功"})
+}
+func fail(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]any{"code": status, "msg": msg})
+}
+func decode(r *http.Request, v any) error {
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	return d.Decode(v)
+}
+func normalizeEmail(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	a, e := mail.ParseAddress(v)
+	if e != nil || a.Address != v || len(v) > 254 {
+		return ""
+	}
+	return v
+}
+func (s *Server) audit(ctx context.Context, uid, action, target string, success bool) {
+	if _, e := s.db.Exec(ctx, "INSERT INTO audit(user_id,action,target,success) VALUES($1,$2,$3,$4)", uid, action, target, success); e != nil {
+		slog.Error("audit write failed")
+	}
+}
+func (s *Server) limited(r *http.Request, key string, max int, period time.Duration) bool {
+	var n int
+	e := s.db.QueryRow(r.Context(), `INSERT INTO rate_limits(key,count,until_at) VALUES($1,1,$2) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN rate_limits.until_at<now() THEN 1 ELSE rate_limits.count+1 END, until_at=CASE WHEN rate_limits.until_at<now() THEN EXCLUDED.until_at ELSE rate_limits.until_at END RETURNING count`, key, time.Now().Add(period)).Scan(&n)
+	return e != nil || n > max
+}
+func remoteIP(r *http.Request) string {
+	if ip, ok := r.Context().Value(clientIPKey{}).(string); ok {
+		return ip
+	}
+	h, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return h
+}
+func (s *Server) user(ctx context.Context, id string) (u User, e error) {
+	e = s.db.QueryRow(ctx, "SELECT id,email,name,avatar,admin,enabled,created_at FROM users WHERE id=$1", id).Scan(&u.ID, &u.Email, &u.Name, &u.Avatar, &u.Admin, &u.Enabled, &u.Created)
+	if e == nil && !u.Enabled {
+		e = errors.New("disabled")
+	}
+	return
+}
+func (s *Server) current(r *http.Request) (u User, e error) {
+	c, e := r.Cookie("duoyu_session")
+	if e != nil {
+		return u, e
+	}
+	var id string
+	e = s.db.QueryRow(r.Context(), "SELECT user_id FROM sessions WHERE hash=$1 AND expires_at>now()", digest(c.Value)).Scan(&id)
+	if e != nil {
+		return u, e
+	}
+	return s.user(r.Context(), id)
+}
+func (s *Server) require(w http.ResponseWriter, r *http.Request, admin bool) (User, bool) {
+	u, e := s.current(r)
+	if e != nil {
+		fail(w, 401, "请先登录")
+		return u, false
+	}
+	if admin && !u.Admin {
+		fail(w, 403, "需要管理员权限")
+		return u, false
+	}
+	return u, true
+}
+func (s *Server) cookie(w http.ResponseWriter, name, val string, age int) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: val, Path: "/", HttpOnly: true, Secure: !s.dev, SameSite: http.SameSiteLaxMode, MaxAge: age})
+}
+func (s *Server) newSession(w http.ResponseWriter, r *http.Request, id, amr string) error {
+	v := randomID()
+	tx, e := s.db.Begin(r.Context())
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(r.Context())
+	if c, e := r.Cookie("duoyu_session"); e == nil {
+		if _, err := tx.Exec(r.Context(), "DELETE FROM sessions WHERE hash=$1", digest(c.Value)); err != nil {
+			return err
+		}
+	}
+	_, e = tx.Exec(r.Context(), "INSERT INTO sessions(hash,user_id,expires_at,agent,amr) VALUES($1,$2,$3,$4,$5)", digest(v), id, time.Now().Add(12*time.Hour), truncate(r.UserAgent(), 300), amr)
+	if e == nil {
+		e = tx.Commit(r.Context())
+	}
+	if e == nil {
+		s.cookie(w, "duoyu_session", v, 43200)
+	}
+	return e
+}
+func truncate(v string, n int) string {
+	if len(v) > n {
+		return v[:n]
+	}
+	return v
+}

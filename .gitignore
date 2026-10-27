@@ -1,0 +1,11 @@
+/.env
+.env.local
+data/
+*.exe
+*.log
+admin/node_modules/
+admin/dist/
+admin/.env.local
+test-results/
+backups/
+.tools/

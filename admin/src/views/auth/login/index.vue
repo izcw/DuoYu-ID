@@ -1,0 +1,1 @@
+<template><div>正在前往多鱼账号…</div></template><script setup lang="ts">window.location.replace('/login')</script>
