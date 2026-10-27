@@ -29,13 +29,20 @@ func (s *Server) startMaintenance(ctx context.Context, wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(10 * time.Minute)
+		ticker := time.NewTicker(time.Minute)
+		s.monitorSafely(ctx)
+		ticks := 0
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				s.monitorSafely(ctx)
+				ticks++
+				if ticks%10 != 0 {
+					continue
+				}
 				if e := s.cleanupExpired(ctx); e != nil {
 					s.audit(ctx, "", "maintenance.failed", "expired_records", false)
 				}

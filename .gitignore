@@ -9,3 +9,5 @@ admin/.env.local
 test-results/
 backups/
 .tools/
+
+.ci-data/

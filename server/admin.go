@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,6 +14,17 @@ import (
 )
 
 func (s *Server) queryList(w http.ResponseWriter, r *http.Request, sql string, args ...any) {
+	if r.URL.Path == "/api/admin/apps" {
+		u, e := s.current(r)
+		if e != nil {
+			fail(w, 401, "请先登录")
+			return
+		}
+		if !u.Admin && u.ManagementRole == "maintainer" {
+			args = append(args, u.ID)
+			sql = fmt.Sprintf("SELECT scoped.* FROM (%s) scoped WHERE scoped.id IN(SELECT app_id FROM app_maintainers WHERE user_id=$%d) ORDER BY scoped.created_at DESC LIMIT 200", strings.TrimSuffix(sql, " LIMIT 200"), len(args))
+		}
+	}
 	if r.URL.Query().Has("page") {
 		s.paginatedList(w, r, sql, args)
 		return
@@ -290,7 +302,7 @@ func (s *Server) auditList(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, "SELECT a.id,a.action,a.target,a.success,a.created_at,coalesce(u.email,'系统 / 匿名') AS actor FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200")
+	s.queryList(w, r, "SELECT a.id,a.action,a.target,a.success,a.created_at,a.request_id,coalesce(u.email,'系统 / 匿名') AS actor FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200")
 }
 func (s *Server) keys(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {

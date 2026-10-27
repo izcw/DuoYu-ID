@@ -19,6 +19,15 @@
         ><span>{{ m.note }}</span></div
       ></div
     >
+    <nav class="dy-shortcuts" aria-label="常用管理入口"
+      ><button class="dy-shortcut" @click="$router.push('/manage/apps')"
+        ><b>项目接入 →</b><span>回调地址、客户端类型与准入范围</span></button
+      ><button class="dy-shortcut" @click="$router.push('/manage/health')"
+        ><b>运行状态 →</b><span>退出通知、邮件队列与认证配置</span></button
+      ><button class="dy-shortcut" @click="$router.push('/manage/docs')"
+        ><b>接入指南 →</b><span>选择适合项目的登录与会话方案</span></button
+      ></nav
+    >
     <section class="dy-panel"
       ><div class="dy-heading"
         ><div><h2>登录趋势</h2><p>中心登录成功与失败次数 · 北京时间</p></div

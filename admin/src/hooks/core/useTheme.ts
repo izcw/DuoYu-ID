@@ -60,11 +60,13 @@ export function useTheme() {
 
   // 设置系统主题
   const setSystemTheme = (theme: SystemThemeEnum, themeMode?: SystemThemeEnum) => {
+    theme = SystemThemeEnum.LIGHT
+    themeMode = SystemThemeEnum.LIGHT
     // 临时禁用过渡效果
     disableTransitions()
 
     const el = document.getElementsByTagName('html')[0]
-    const isDark = theme === SystemThemeEnum.DARK
+    const isDark = false
 
     if (!themeMode) {
       themeMode = theme
@@ -128,6 +130,7 @@ export function useTheme() {
  */
 export function initializeTheme() {
   const settingStore = useSettingStore()
+  settingStore.setGlopTheme(SystemThemeEnum.LIGHT, SystemThemeEnum.LIGHT)
   const prefersDark = usePreferredDark()
 
   // 根据系统偏好应用主题

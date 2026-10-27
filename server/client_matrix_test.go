@@ -10,11 +10,13 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	verifierlib "github.com/coreos/go-oidc/v3/oidc"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // This matrix runs only against TestIntegration's disposable PostgreSQL schema.
@@ -410,6 +412,7 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 	})
 	t.Run("signed persistent logout delivery and retry", func(t *testing.T) {
 		calls := 0
+		var eventID any
 		receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			calls++
 			r.ParseForm()
@@ -421,6 +424,11 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 			}
 			var claims map[string]any
 			token.Claims(&claims)
+			if calls == 1 {
+				eventID = claims["jti"]
+			} else if eventID != claims["jti"] {
+				t.Error("retry changed event identity")
+			}
 			if token.Subject != uid || claims["sid"] == nil || claims["events"] == nil || claims["nonce"] != nil || claims["jti"] == nil {
 				t.Error("logout claims")
 			}
@@ -465,6 +473,161 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 			t.Fatal("private callback not blocked")
 		}
 		login(browser)
+	})
+	t.Run("API key overlap rotation expiry and revocation", func(t *testing.T) {
+		s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid)
+		defer s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", uid)
+		old := "dy_rotation_fixture"
+		s.db.Exec(ctx, "INSERT INTO api_keys(id,name,digest,app_id,scopes) VALUES('rotation-key','rotation',$1,$2,ARRAY['app:read'])", s.mac(old), pub)
+		call := func(secret string) int {
+			r, _ := http.NewRequest("GET", origin+"/api/service/app", nil)
+			r.Header.Set("Authorization", "Bearer "+secret)
+			res, e := http.DefaultClient.Do(r)
+			if e != nil {
+				t.Fatal(e)
+			}
+			res.Body.Close()
+			return res.StatusCode
+		}
+		status, out := request(browser, "POST", "/api/admin/keys/rotation-key/rotate", map[string]any{"overlap_hours": 1})
+		if status != 200 {
+			t.Fatal(status)
+		}
+		fresh := out["data"].(map[string]any)["secret"].(string)
+		if call(old) != 200 || call(fresh) != 200 {
+			t.Fatal("overlap rejected")
+		}
+		if status, _ := request(browser, "POST", "/api/admin/keys/rotation-key/rotate", map[string]any{"overlap_hours": 1}); status != 409 {
+			t.Fatal("nested rotation")
+		}
+		s.db.Exec(ctx, "UPDATE api_keys SET previous_until=now()-interval '1 second' WHERE id='rotation-key'")
+		if call(old) != 401 || call(fresh) != 200 {
+			t.Fatal("overlap deadline")
+		}
+		s.db.Exec(ctx, "UPDATE api_keys SET revoked=true WHERE id='rotation-key'")
+		if call(fresh) != 401 {
+			t.Fatal("revocation")
+		}
+	})
+	t.Run("operations alerts deduplicate and recover", func(t *testing.T) {
+		if e := s.monitorOperations(ctx); e != nil {
+			t.Fatal(e)
+		}
+		var before int
+		s.db.QueryRow(ctx, "SELECT count(*) FROM audit WHERE action LIKE 'monitor.%' AND target='logout_delivery_failed'").Scan(&before)
+		var id int64
+		s.db.QueryRow(ctx, "INSERT INTO logout_jobs(app_id,user_id,session_hash,endpoint,status) VALUES($1,$2,'monitor','https://example.invalid/logout','failed') RETURNING id", pub, uid).Scan(&id)
+		for range 2 {
+			if e := s.monitorOperations(ctx); e != nil {
+				t.Fatal(e)
+			}
+		}
+		var count int
+		s.db.QueryRow(ctx, "SELECT count(*) FROM audit WHERE action LIKE 'monitor.%' AND target='logout_delivery_failed'").Scan(&count)
+		if count != before+1 {
+			t.Fatal("alert not deduplicated", before, count)
+		}
+		s.db.Exec(ctx, "DELETE FROM logout_jobs WHERE id=$1", id)
+		if e := s.monitorOperations(ctx); e != nil {
+			t.Fatal(e)
+		}
+		s.db.QueryRow(ctx, "SELECT count(*) FROM audit WHERE action LIKE 'monitor.%' AND target='logout_delivery_failed'").Scan(&count)
+		if count != before+2 {
+			t.Fatal("recovery missing")
+		}
+	})
+	t.Run("database unavailable fails closed without false logout", func(t *testing.T) {
+		broken, e := pgxpool.NewWithConfig(ctx, s.db.Config())
+		if e != nil {
+			t.Fatal(e)
+		}
+		broken.Close()
+		unavailable := *s
+		unavailable.db = broken
+		request := httptest.NewRequest("GET", origin+"/api/me", nil)
+		issuerURL, _ := url.Parse(origin)
+		for _, cookie := range browser.Jar.Cookies(issuerURL) {
+			request.AddCookie(cookie)
+		}
+		response := httptest.NewRecorder()
+		if _, yes := unavailable.require(response, request, false); yes || response.Code != 503 {
+			t.Fatal("database outage mistaken for authentication failure", response.Code)
+		}
+		if _, e := unavailable.deliverLogout(ctx); e == nil {
+			t.Fatal("queue failure hidden")
+		}
+		if e := unavailable.monitorOperations(ctx); e == nil {
+			t.Fatal("monitor falsely healthy")
+		}
+	})
+	t.Run("management roles deny cross-project and writes", func(t *testing.T) {
+		s.db.Exec(ctx, "UPDATE users SET management_role='maintainer' WHERE id=$1", uid)
+		defer s.db.Exec(ctx, "UPDATE users SET management_role='none' WHERE id=$1", uid)
+		s.db.Exec(ctx, "INSERT INTO app_maintainers(user_id,app_id) VALUES($1,$2)", uid, pub)
+		defer s.db.Exec(ctx, "DELETE FROM app_maintainers WHERE user_id=$1", uid)
+		status, out := request(browser, "GET", "/api/admin/apps?page=1", nil)
+		if status != 200 || out["data"].(map[string]any)["total"] != float64(1) {
+			t.Fatal("unscoped projects", status)
+		}
+		for _, path := range []string{"/api/admin/apps/" + other, "/api/admin/apps/" + other + "/grants", "/api/admin/users", "/api/admin/keys", "/api/admin/diagnostics", "/api/admin/mail"} {
+			if status, _ := request(browser, "GET", path, nil); status != 403 {
+				t.Fatal("cross-project access", path, status)
+			}
+		}
+		if status, _ := request(browser, "GET", "/api/admin/apps/"+pub, nil); status != 200 {
+			t.Fatal("assigned project denied", status)
+		}
+		if status, _ := request(browser, "POST", "/api/admin/apps", map[string]any{}); status != 403 {
+			t.Fatal("maintainer created project")
+		}
+		if status, _ := request(browser, "PUT", "/api/admin/users/"+uid+"/access", map[string]any{"role": "auditor"}); status != 403 {
+			t.Fatal("role escalation")
+		}
+		s.db.Exec(ctx, "UPDATE users SET management_role='auditor' WHERE id=$1", uid)
+		for _, path := range []string{"/api/admin/audit", "/api/admin/diagnostics", "/api/admin/logout-events"} {
+			if status, _ := request(browser, "GET", path, nil); status != 200 {
+				t.Fatal("audit denied", path, status)
+			}
+		}
+		if status, _ := request(browser, "POST", "/api/admin/logout-events/1/retry", map[string]any{}); status != 403 {
+			t.Fatal("auditor mutation")
+		}
+	})
+	t.Run("logout failure metadata manual retry and audit correlation", func(t *testing.T) {
+		s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid)
+		defer s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", uid)
+		receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+		defer receiver.Close()
+		var id int64
+		if e := s.db.QueryRow(ctx, "INSERT INTO logout_jobs(app_id,user_id,session_hash,endpoint,attempts) VALUES($1,$2,'test-session',$3,9) RETURNING id", pub, uid, receiver.URL).Scan(&id); e != nil {
+			t.Fatal(e)
+		}
+		if _, e := s.deliverLogout(ctx); e != nil {
+			t.Fatal(e)
+		}
+		var state, kind string
+		var code, attempts int
+		s.db.QueryRow(ctx, "SELECT status,last_error,http_status FROM logout_jobs WHERE id=$1", id).Scan(&state, &kind, &code)
+		if state != "failed" || kind != "http_status" || code != 503 {
+			t.Fatal(state, kind, code)
+		}
+		path := "/api/admin/logout-events/" + strconv.FormatInt(id, 10)
+		if status, _ := request(browser, "POST", path+"/retry", map[string]any{}); status != 200 {
+			t.Fatal("retry", status)
+		}
+		if status, _ := request(browser, "POST", path+"/retry", map[string]any{}); status != 409 {
+			t.Fatal("duplicate retry", status)
+		}
+		s.db.QueryRow(ctx, "SELECT count(*) FROM logout_attempts WHERE job_id=$1", id).Scan(&attempts)
+		if attempts != 1 {
+			t.Fatal("history lost")
+		}
+		var requestID string
+		s.db.QueryRow(ctx, "SELECT request_id FROM audit WHERE action='admin.logout.retry' AND target=$1 ORDER BY id DESC LIMIT 1", strconv.FormatInt(id, 10)).Scan(&requestID)
+		if requestID == "" {
+			t.Fatal("missing request correlation")
+		}
+		s.db.Exec(ctx, "DELETE FROM logout_jobs WHERE id=$1", id)
 	})
 	t.Run("server pagination searches beyond newest 200", func(t *testing.T) {
 		s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *Server) validLogoutEndpoint(raw string) bool {
@@ -83,8 +84,11 @@ func (s *Server) deliverLogout(ctx context.Context) (bool, error) {
 	var client, uid, hash, endpoint string
 	var attempts int
 	e = tx.QueryRow(ctx, `SELECT id,app_id,user_id,session_hash,endpoint,attempts FROM logout_jobs WHERE status='queued' AND next_attempt<=now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &client, &uid, &hash, &endpoint, &attempts)
-	if e != nil {
+	if errors.Is(e, pgx.ErrNoRows) {
 		return false, nil
+	}
+	if e != nil {
+		return false, e
 	}
 	attempts++
 	if _, e = tx.Exec(ctx, "UPDATE logout_jobs SET attempts=$2,next_attempt=now()+interval '30 seconds' WHERE id=$1", id, attempts); e != nil {
@@ -93,32 +97,29 @@ func (s *Server) deliverLogout(ctx context.Context) (bool, error) {
 	if e = tx.Commit(ctx); e != nil {
 		return true, e
 	}
-	accepted := false
-	if s.validLogoutEndpoint(endpoint) {
-		token, err := s.logoutToken(id, client, uid, hash)
-		if err == nil {
-			req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(url.Values{"logout_token": {token}}.Encode()))
-			if err == nil {
-				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-				httpClient := s.logoutHTTPClient()
-				res, err := httpClient.Do(req)
-				if err == nil {
-					accepted = res.StatusCode >= 200 && res.StatusCode < 300
-					io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
-					res.Body.Close()
-				}
-				httpClient.CloseIdleConnections()
-			}
-		}
-	}
+	started := time.Now()
+	statusCode, errorClass := s.sendLogout(ctx, id, client, uid, hash, endpoint)
 	state := "queued"
-	if accepted {
+	if errorClass == "" {
 		state = "delivered"
 	} else if attempts >= 10 {
 		state = "failed"
 	}
 	delay := min(3600, 5*(1<<min(attempts, 10)))
-	_, e = s.db.Exec(ctx, "UPDATE logout_jobs SET status=$2,next_attempt=now()+$3::interval WHERE id=$1", id, state, fmt.Sprintf("%d seconds", delay))
+	resultTx, e := s.db.Begin(ctx)
+	if e != nil {
+		return true, e
+	}
+	defer resultTx.Rollback(ctx)
+	_, e = resultTx.Exec(ctx, "INSERT INTO logout_attempts(job_id,http_status,error_class,duration_ms) VALUES($1,$2,$3,$4)", id, statusCode, errorClass, time.Since(started).Milliseconds())
+	if e != nil {
+		return true, e
+	}
+	_, e = resultTx.Exec(ctx, "UPDATE logout_jobs SET status=$2,next_attempt=now()+$3::interval,last_error=$4,http_status=$5,completed_at=CASE WHEN $2='delivered' THEN now() ELSE NULL END WHERE id=$1", id, state, fmt.Sprintf("%d seconds", delay), errorClass, statusCode)
+	if e != nil {
+		return true, e
+	}
+	e = resultTx.Commit(ctx)
 	return true, e
 }
 
@@ -143,3 +144,69 @@ func (s *Server) startLogoutWorker(ctx context.Context, wg *sync.WaitGroup) {
 		}
 	}()
 }
+
+// Persist only bounded classifications; response bodies and signed tokens are never logged.
+func (s *Server) sendLogout(ctx context.Context, id int64, client, uid, hash, endpoint string) (int, string) {
+	if !s.validLogoutEndpoint(endpoint) {
+		return 0, "invalid_endpoint"
+	}
+	token, e := s.logoutToken(id, client, uid, hash)
+	if e != nil {
+		return 0, "signing"
+	}
+	req, e := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(url.Values{"logout_token": {token}}.Encode()))
+	if e != nil {
+		return 0, "invalid_endpoint"
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	c := s.logoutHTTPClient()
+	defer c.CloseIdleConnections()
+	res, e := c.Do(req)
+	if e != nil {
+		var timeout net.Error
+		if errors.As(e, &timeout) && timeout.Timeout() {
+			return 0, "timeout"
+		}
+		return 0, "transport"
+	}
+	defer res.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return res.StatusCode, "http_status"
+	}
+	return res.StatusCode, ""
+}
+func (s *Server) retryLogout(w http.ResponseWriter, r *http.Request) {
+	u, yes := s.require(w, r, true)
+	if !yes {
+		return
+	}
+	id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if e != nil || id < 1 {
+		fail(w, 400, "事件标识无效")
+		return
+	}
+	result, e := s.db.Exec(r.Context(), "UPDATE logout_jobs SET status='queued',attempts=0,next_attempt=now(),retry_count=retry_count+1 WHERE id=$1 AND status='failed'", id)
+	if e != nil {
+		fail(w, 503, "暂时无法重试")
+		return
+	}
+	if result.RowsAffected() != 1 {
+		fail(w, 409, "仅失败事件可重新投递，请刷新状态")
+		return
+	}
+	s.audit(r.Context(), u.ID, "admin.logout.retry", strconv.FormatInt(id, 10), true)
+	ok(w, nil)
+}
+func (s *Server) logoutAttempts(w http.ResponseWriter, r *http.Request) {
+	if _, yes := s.require(w, r, true); !yes {
+		return
+	}
+	id, e := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if e != nil || id < 1 {
+		fail(w, 400, "事件标识无效")
+		return
+	}
+	s.queryList(w, r, "SELECT id,created_at,http_status,error_class,duration_ms FROM logout_attempts WHERE job_id=$1 ORDER BY id DESC LIMIT 200", id)
+}
+func requestID(ctx context.Context) string { v, _ := ctx.Value(requestIDKey{}).(string); return v }

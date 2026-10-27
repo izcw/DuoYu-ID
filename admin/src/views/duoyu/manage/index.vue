@@ -4,7 +4,10 @@
       ><div
         ><h1>{{ meta.title }}</h1
         ><p>{{ meta.description }}</p></div
-      ><el-button v-if="kind === 'apps' || kind === 'keys'" type="primary" @click="create"
+      ><el-button
+        v-if="superAdmin && (kind === 'apps' || kind === 'keys')"
+        type="primary"
+        @click="create"
         >＋ {{ kind === 'apps' ? '创建项目' : '创建 API 凭证' }}</el-button
       ></div
     ><div class="dy-error" v-if="error">{{ error }}</div
@@ -139,7 +142,7 @@
         ></el-table
       >
       <el-table v-else :data="paged" v-loading="loading" empty-text="暂无日志"
-        ><el-table-column prop="actor" label="操作账号" min-width="190" /><el-table-column
+        ><el-table-column prop="request_id" label="请求标识" min-width="190" show-overflow-tooltip /><el-table-column prop="actor" label="操作账号" min-width="190" /><el-table-column
           prop="action"
           label="事件"
           min-width="190"
@@ -169,10 +172,12 @@
   </div>
 </template>
 <script setup lang="ts">
-  import { ref, computed, watch } from 'vue'
+  import { ref, computed, watch, onBeforeUnmount } from 'vue'
   import { useRoute, useRouter } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
+  import { useUserStore } from '@/store/modules/user'
   import { api, dateText } from '@/api/duoyu'
+  const superAdmin = useUserStore().info.roles?.includes('R_SUPER')
   const route = useRoute(),
     router = useRouter(),
     kind = computed(() => route.path.split('/').pop() || 'users')
@@ -190,10 +195,28 @@
     page = ref(1),
     total = ref(0)
   const paged = computed(() => rows.value)
-  watch(search, () => { if(page.value !== 1) page.value=1; else load() })
-  watch(page, () => load())
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let controller: AbortController | undefined
   let generation = 0
+  watch(search, () => {
+    clearTimeout(timer)
+    controller?.abort()
+    generation++
+    timer = setTimeout(() => {
+      if (page.value !== 1) page.value = 1
+      else load()
+    }, 300)
+  })
+  watch(page, () => load())
+  onBeforeUnmount(() => {
+    clearTimeout(timer)
+    generation++
+    controller?.abort()
+  })
   async function load() {
+    clearTimeout(timer)
+    controller?.abort()
+    controller = new AbortController()
     const current = ++generation
     loading.value = true
     error.value = ''
@@ -201,14 +224,17 @@
       const result = await api(
         '/api/admin/' +
           kind.value +
-          ('?page=' + page.value + '&page_size=20&q=' + encodeURIComponent(search.value))
+          ('?page=' + page.value + '&page_size=20&q=' + encodeURIComponent(search.value)),
+        'GET',
+        undefined,
+        controller.signal
       )
       if (current === generation) {
         rows.value = result.items
         total.value = result.total
       }
     } catch (e: any) {
-      if (current === generation) error.value = e.message
+      if (current === generation && e.name !== 'AbortError') error.value = e.message
     } finally {
       if (current === generation) loading.value = false
     }

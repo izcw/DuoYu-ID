@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/zitadel/oidc/v3/pkg/op"
 )
@@ -43,14 +44,18 @@ type Server struct {
 	mailTransport func(MailMessage) error // Replaced only by isolated tests; production uses SMTP.
 }
 type User struct {
-	ID      string    `json:"id"`
-	Email   string    `json:"email"`
-	Name    string    `json:"name"`
-	Avatar  string    `json:"avatar"`
-	Admin   bool      `json:"admin"`
-	Enabled bool      `json:"enabled"`
-	Created time.Time `json:"created_at"`
+	ManagementRole string    `json:"management_role"`
+	ID             string    `json:"id"`
+	Email          string    `json:"email"`
+	Name           string    `json:"name"`
+	Avatar         string    `json:"avatar"`
+	Admin          bool      `json:"admin"`
+	Enabled        bool      `json:"enabled"`
+	Created        time.Time `json:"created_at"`
 }
+
+var errDisabledUser = errors.New("disabled user")
+
 type sessionContextKey struct{}
 
 func env(k, d string) string {
@@ -203,14 +208,20 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /api/auth/continue", s.completeAuth)
 	m.HandleFunc("GET /api/admin/overview", s.overview)
 	m.HandleFunc("GET /api/admin/diagnostics", s.diagnostics)
+	m.HandleFunc("GET /api/admin/apps/{id}/checks", s.appChecks)
+	m.HandleFunc("POST /api/admin/keys/{id}/rotate", s.rotateAPIKey)
+	m.HandleFunc("POST /api/admin/logout-events/{id}/retry", s.retryLogout)
+	m.HandleFunc("GET /api/admin/logout-events/{id}/attempts", s.logoutAttempts)
 	m.HandleFunc("GET /api/admin/logout-events", func(w http.ResponseWriter, r *http.Request) {
 		if _, yes := s.require(w, r, true); !yes {
 			return
 		}
-		s.queryList(w, r, "SELECT id,app_id,user_id,created_at,next_attempt,attempts,status FROM logout_jobs ORDER BY id DESC LIMIT 200")
+		s.queryList(w, r, "SELECT id,app_id,user_id,created_at,next_attempt,attempts,status,last_error,http_status,completed_at,retry_count FROM logout_jobs ORDER BY id DESC LIMIT 200")
 	})
 	m.HandleFunc("GET /api/admin/users", s.users)
 	m.HandleFunc("PATCH /api/admin/users/{id}", s.updateUser)
+	m.HandleFunc("PUT /api/admin/users/{id}/access", s.updateManagementAccess)
+	m.HandleFunc("GET /api/admin/users/{id}/access", s.managementAccess)
 	m.HandleFunc("POST /api/admin/users/{id}/revoke", s.adminRevoke)
 	m.HandleFunc("GET /api/admin/apps", s.apps)
 	m.HandleFunc("POST /api/admin/apps", s.saveApp)
@@ -263,7 +274,9 @@ func (s *Server) routes() http.Handler {
 		http.FileServer(http.Dir("admin/dist")).ServeHTTP(w, r)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Request-ID", randomID())
+		requestID := randomID()
+		w.Header().Set("X-Request-ID", requestID)
+		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
 		r = s.withClientIP(r)
 		if c, e := r.Cookie("duoyu_session"); e == nil {
 			r = r.WithContext(context.WithValue(r.Context(), sessionContextKey{}, digest(c.Value)))
@@ -311,8 +324,12 @@ func normalizeEmail(v string) string {
 	}
 	return v
 }
+
+type requestIDKey struct{}
+
 func (s *Server) audit(ctx context.Context, uid, action, target string, success bool) {
-	if _, e := s.db.Exec(ctx, "INSERT INTO audit(user_id,action,target,success) VALUES($1,$2,$3,$4)", uid, action, target, success); e != nil {
+	slog.Info("audit event", "request_id", requestID(ctx), "action", action, "success", success)
+	if _, e := s.db.Exec(ctx, "INSERT INTO audit(user_id,action,target,success,request_id) VALUES($1,$2,$3,$4,$5)", uid, action, target, success, requestID(ctx)); e != nil {
 		slog.Error("audit write failed")
 	}
 }
@@ -329,9 +346,9 @@ func remoteIP(r *http.Request) string {
 	return h
 }
 func (s *Server) user(ctx context.Context, id string) (u User, e error) {
-	e = s.db.QueryRow(ctx, "SELECT id,email,name,avatar,admin,enabled,created_at FROM users WHERE id=$1", id).Scan(&u.ID, &u.Email, &u.Name, &u.Avatar, &u.Admin, &u.Enabled, &u.Created)
+	e = s.db.QueryRow(ctx, "SELECT id,email,name,avatar,admin,enabled,created_at,management_role FROM users WHERE id=$1", id).Scan(&u.ID, &u.Email, &u.Name, &u.Avatar, &u.Admin, &u.Enabled, &u.Created, &u.ManagementRole)
 	if e == nil && !u.Enabled {
-		e = errors.New("disabled")
+		e = errDisabledUser
 	}
 	return
 }
@@ -350,10 +367,14 @@ func (s *Server) current(r *http.Request) (u User, e error) {
 func (s *Server) require(w http.ResponseWriter, r *http.Request, admin bool) (User, bool) {
 	u, e := s.current(r)
 	if e != nil {
-		fail(w, 401, "请先登录")
+		if errors.Is(e, http.ErrNoCookie) || errors.Is(e, pgx.ErrNoRows) || errors.Is(e, errDisabledUser) {
+			fail(w, 401, "请先登录")
+		} else {
+			fail(w, 503, "认证服务暂不可用，请稍后重试")
+		}
 		return u, false
 	}
-	if admin && !u.Admin {
+	if admin && !u.Admin && !s.managementAllowed(r, u) {
 		fail(w, 403, "需要管理员权限")
 		return u, false
 	}

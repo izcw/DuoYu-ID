@@ -1,12 +1,13 @@
 <template>
   <div class="dy-page"
     ><div class="dy-heading"
-      ><div><h1>接入文档</h1><p>一次标准接入，让认证与业务各自独立。</p></div
+      ><div><h1>接入文档</h1><p>客户端配置、标准协议与会话管理</p></div
       ><el-button @click="download">下载 Service API 文档</el-button></div
     ><div class="dy-hero"
-      ><span class="dy-kicker">DEVELOPER GUIDE</span><h2>使用多鱼账号登录</h2
+      ><span class="dy-kicker">接入指南</span><h2>使用多鱼账号登录</h2
       ><p
-        >支持 OIDC Authorization Code + S256 PKCE、按项目启用的轮换刷新令牌，以及已授权范围内的静默认证。不提供隐式授权或密码授权。</p
+        >支持 OIDC Authorization Code + S256
+        PKCE、按项目启用的轮换刷新令牌，以及已授权范围内的静默认证。不提供隐式授权或密码授权。</p
       ></div
     ><section class="dy-panel"
       ><h2>01 · 创建项目</h2
@@ -69,10 +70,18 @@ Authorization: Bearer YOUR_API_KEY</pre
   >
 </template>
 <script setup lang="ts">
-  import {ref,onMounted} from 'vue'
-  import {api} from '@/api/duoyu'
-  const diagnostics=ref<any>(null),diagnosticError=ref('')
-  async function check(){try{diagnosticError.value='';diagnostics.value=await api('/api/admin/diagnostics')}catch(e:any){diagnosticError.value=e.message}}
+  import { ref, onMounted } from 'vue'
+  import { api } from '@/api/duoyu'
+  const diagnostics = ref<any>(null),
+    diagnosticError = ref('')
+  async function check() {
+    try {
+      diagnosticError.value = ''
+      diagnostics.value = await api('/api/admin/diagnostics')
+    } catch (e: any) {
+      diagnosticError.value = e.message
+    }
+  }
   onMounted(check)
 
   const origin = window.location.origin

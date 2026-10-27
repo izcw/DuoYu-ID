@@ -104,6 +104,8 @@ curl -H "Authorization: Bearer $DUOYU_API_KEY" https://你的账号域名/api/se
 
 最新实现与正式域名部署事项见 [登录与接入升级交付记录](docs/session-upgrade-2026-10-27.md)。
 
+最新界面更新、功能清单、多类型接入验证及改进路线见 [完整评估报告（2026-10-27）](docs/ui-review-and-roadmap-2026-10-27.md)。
+
 ## 验证
 
 最新完整接入测试、实测限制与分阶段方案见 [多项目接入测试报告（2026-10-26）](docs/integration-test-report-2026-10-26.md)。
@@ -118,6 +120,8 @@ pnpm --dir admin build
 go build -o test-results/oidc-client.exe ./examples/client
 cd admin
 node tests/multi-project.mjs
+# 桌面/手机的全部在用管理视图、42px 登录控件和运行状态筛选
+node tests/ui-refresh.mjs
 # 真实 SMTP 环境只测试页面与密码登录，不发邮件
 $env:SKIP_MAIL='true'
 Remove-Item Env:TEST_PASSKEY -ErrorAction SilentlyContinue
@@ -142,3 +146,5 @@ scripts/       开发初始化、启动脚本
 docs/          架构与协议说明
 data/          原生运行时的签名私钥、头像（不提交）
 ```
+
+建议落地与验收：[2026-10-27 实现和测试报告](docs/roadmap-implementation-and-tests-2026-10-27.md)。新增权限与凭证 UI 回归：在 admin 目录执行 `node tests/roadmap.mjs`。

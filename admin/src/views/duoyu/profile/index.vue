@@ -3,9 +3,17 @@
     ><div class="dy-heading"
       ><div
         ><h1>{{ dialog ? titles[dialog] : '账号与安全' }}</h1
-        ><p>管理你的多鱼身份，让每一次连接都安心。</p></div
-      ><span class="dy-tag">MY DUOYU ID</span></div
+        ><p>个人资料、登录方式与设备会话</p></div
+      ><span class="dy-tag">我的账号</span></div
     ><div v-if="error" class="dy-error">{{ error }}</div
+    ><div v-if="!dialog" class="dy-shortcuts"
+      ><div class="dy-shortcut"
+        ><b>登录邮箱</b><span>{{ me.email || '—' }}</span></div
+      ><div class="dy-shortcut"
+        ><b>{{ passkeys.length }} 个通行密钥</b><span>使用设备验证完成登录</span></div
+      ><div class="dy-shortcut"
+        ><b>{{ sessions.length }} 个中心会话</b><span>检查设备并撤销不再使用的会话</span></div
+      ></div
     ><div v-if="!dialog" class="dy-grid"
       ><section class="dy-panel"
         ><h2>个人资料</h2
@@ -40,7 +48,7 @@
           ><div>通行密钥 / 手机通行证<p>支持 iPhone Face ID、Touch ID 和电脑扫码登录</p></div
           ><el-button @click="dialog = 'passkey'">添加</el-button></div
         ><div class="dy-muted" style="margin-top: 24px"
-          >修改密码或邮箱后，中心会话与访问令牌将被撤销。各应用的本地会话按应用自己的策略失效。</div
+          >修改密码或邮箱后，中心会话与访问令牌将被撤销。已接入退出通知的项目会同步处理；其他项目需在线复核登录状态。</div
         ></section
       ></div
     ><section v-if="!dialog" class="dy-panel"

@@ -20,7 +20,7 @@ func (s *Server) migrate(ctx context.Context) error {
 	if _, err = tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations(version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"); err != nil {
 		return err
 	}
-	for _, name := range []string{"schema.sql", "migrations/002_mail_queue.sql", "migrations/003_session_binding.sql", "migrations/004_refresh_tokens.sql", "migrations/005_logout_events.sql", "migrations/006_policy_revocation.sql"} {
+	for _, name := range []string{"schema.sql", "migrations/002_mail_queue.sql", "migrations/003_session_binding.sql", "migrations/004_refresh_tokens.sql", "migrations/005_logout_events.sql", "migrations/006_policy_revocation.sql", "migrations/007_operations.sql", "migrations/008_monitoring.sql"} {
 		body, err := assets.ReadFile(name)
 		if err != nil {
 			return err

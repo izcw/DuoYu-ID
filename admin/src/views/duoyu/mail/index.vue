@@ -8,7 +8,7 @@
     <section class="dy-panel"
       ><h2>发送记录</h2
       ><p class="dy-muted"
-        >显示最近 200 条项目邮件记录。“SMTP
+        >支持按项目、收件人和状态查询全部记录。“SMTP
         已接受”不代表已进入收件箱；结果不确定时不要直接重复发送。正文加密暂存于队列，完成或过期后清除；此页面不展示正文。</p
       >
       <div class="dy-toolbar"
@@ -91,7 +91,7 @@ Content-Type: application/json
   </div>
 </template>
 <script setup lang="ts">
-  import { ref, onMounted, watch } from 'vue'
+  import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
   import { api, dateText } from '@/api/duoyu'
   const rows = ref<any[]>([]),
     loading = ref(false),
@@ -116,20 +116,53 @@ Content-Type: application/json
     verification: '业务验证码',
     alert: '告警'
   }
-  watch([search,status],()=>{if(page.value!==1)page.value=1;else load()})
-  watch(page,load)
-  let generation=0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let controller: AbortController | undefined
+  let generation = 0
+  const reset = () => {
+    if (page.value !== 1) page.value = 1
+    else load()
+  }
+  watch(search, () => {
+    clearTimeout(timer)
+    controller?.abort()
+    generation++
+    timer = setTimeout(reset, 300)
+  })
+  watch(status, reset)
+  watch(page, load)
+  onBeforeUnmount(() => {
+    clearTimeout(timer)
+    generation++
+    controller?.abort()
+  })
   async function load() {
-    const current=++generation
+    clearTimeout(timer)
+    controller?.abort()
+    controller = new AbortController()
+    const current = ++generation
     loading.value = true
     error.value = ''
     try {
-      const result=await api('/api/admin/mail?page='+page.value+'&page_size=20&q='+encodeURIComponent(search.value)+'&status='+encodeURIComponent(status.value))
-      if(current===generation){rows.value=result.items;total.value=result.total}
+      const result = await api(
+        '/api/admin/mail?page=' +
+          page.value +
+          '&page_size=20&q=' +
+          encodeURIComponent(search.value) +
+          '&status=' +
+          encodeURIComponent(status.value),
+        'GET',
+        undefined,
+        controller.signal
+      )
+      if (current === generation) {
+        rows.value = result.items
+        total.value = result.total
+      }
     } catch (e: any) {
-      if(current===generation)error.value = e.message
+      if (current === generation && e.name !== 'AbortError') error.value = e.message
     } finally {
-      if(current===generation)loading.value = false
+      if (current === generation) loading.value = false
     }
   }
   onMounted(load)

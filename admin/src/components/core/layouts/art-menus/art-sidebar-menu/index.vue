@@ -104,7 +104,7 @@
         >
           <SidebarSubmenu
             :list="menuList"
-            :isMobile="isMobileMode"
+            :isMobile="isMobileScreen"
             :theme="getMenuTheme"
             @close="handleMenuClose"
           />
@@ -157,7 +157,6 @@
 
   // 组件内部状态
   const defaultOpenedMenus = ref<string[]>([])
-  const isMobileMode = ref(false)
   const showMobileModal = ref(false)
 
   // 使用 VueUse 的窗口尺寸监听
@@ -284,17 +283,6 @@
    */
   const toggleMenuVisibility = (): void => {
     settingStore.setMenuOpen(!menuOpen.value)
-
-    // 移动端模态框控制逻辑
-    if (isMobileScreen.value) {
-      if (!menuOpen.value) {
-        // 菜单即将打开，立即显示模态框
-        showMobileModal.value = true
-      } else {
-        // 菜单即将关闭，延迟隐藏模态框确保动画完成
-        delayHideMobileModal()
-      }
-    }
   }
 
   /**
@@ -326,11 +314,13 @@
     } else {
       showMobileModal.value = false
     }
-  })
+  }, { immediate: true })
 
   /**
    * 监听菜单开关状态变化
    */
+  watch(() => route.fullPath, () => { if (isMobileScreen.value) handleMenuClose() })
+
   watch(menuOpen, (isMenuOpen: boolean) => {
     if (!isMobileScreen.value) {
       // 大屏幕设备上，模态框始终隐藏

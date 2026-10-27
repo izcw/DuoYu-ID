@@ -48,6 +48,10 @@ export default ({ mode }: { mode: string }) => {
     },
     build: {
       target: 'es2015',
+      rollupOptions: { output: { manualChunks(id) {
+        if (id.includes('node_modules') && (id.includes('/echarts/') || id.includes('/zrender/'))) return 'charts'
+        if (id.includes('node_modules') && id.includes('/element-plus/')) return 'element-plus'
+      } } },
       outDir: 'dist',
       chunkSizeWarningLimit: 2000,
       minify: 'terser',

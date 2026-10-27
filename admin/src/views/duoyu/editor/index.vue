@@ -22,9 +22,13 @@
     <template v-else-if="!loading && !error">
       <section v-if="view === 'members'" class="dy-panel"
         ><h2>{{ form.name }} · 登录用户</h2
-        ><p class="dy-muted"
-          >成功完成项目授权的账号；登录记录不等于准入权限。可按页查看全部记录。</p
-        ><el-pagination v-model:current-page="memberPage" :page-size="20" :total="memberTotal" layout="total, prev, pager, next" @current-change="load" /><el-table :data="members" empty-text="暂无登录记录"
+        ><p class="dy-muted">成功完成项目授权的账号；登录记录不等于准入权限。可按页查看全部记录。</p
+        ><el-pagination
+          v-model:current-page="memberPage"
+          :page-size="20"
+          :total="memberTotal"
+          layout="total, prev, pager, next"
+          @current-change="load" /><el-table :data="members" empty-text="暂无登录记录"
           ><el-table-column prop="email" label="邮箱" min-width="200" /><el-table-column
             prop="name"
             label="昵称" /><el-table-column label="首次登录" min-width="170"
@@ -50,6 +54,10 @@
           ><el-descriptions-item label="注册时间">{{
             dateText(form.created_at)
           }}</el-descriptions-item></el-descriptions
+        ><el-button
+          v-if="!form.admin"
+          @click="router.push({ path: '/manage/users/access', query: { id } })"
+          >管理权限</el-button
         ></section
       >
       <el-form v-else label-position="top" @submit.prevent="save" class="dy-form">
@@ -97,7 +105,8 @@
                   ><p>有自己的后端，密钥保存在服务器。适合 Go、Java、Node 等后端网站。</p
                   ><span>client_id + client_secret + PKCE</span></div
                 ><div :class="{ selected: form.public }"
-                  ><b>公共客户端</b><p>无法安全保存密钥，适合纯前端页面、桌面及手机应用。</p
+                  ><b>公共客户端</b
+                  ><p>无法安全保存密钥，适合浏览器或原生应用，请同时选择对应平台。</p
                   ><span>client_id + PKCE，无 client_secret</span></div
                 ></div
               ><p class="dy-muted"
@@ -132,10 +141,32 @@
             >
           </section>
           <section v-if="kind === 'apps'" class="dy-panel"
-            ><h2>回调与访问</h2><el-form-item label="后台退出通知地址 · 可留空"><el-input v-model="form.backchannel_logout_uri" placeholder="https://app.example.com/auth/backchannel-logout" /></el-form-item><p class="dy-muted">项目后端接收签名退出通知，并按 sid 清理本地会话。需要接入方实现验签和幂等处理。</p>
-            <el-form-item v-if="form.public" label="应用平台"><el-radio-group v-model="form.platform"><el-radio value="spa">浏览器 SPA</el-radio><el-radio value="native">桌面 / 手机原生应用</el-radio></el-radio-group></el-form-item>
-            <p v-if="form.platform === 'native'" class="dy-muted">使用系统浏览器和 PKCE；支持 HTTPS、127.0.0.1 / [::1] 回环地址（允许动态端口），或反向域名形式的私有 scheme，如 com.example.app:/callback。手机实机仍需验收。</p>
-            <div class="dy-listitem"><div>允许会话续期<p>显式请求 offline_access；刷新令牌每次轮换，重放会撤销整个令牌家族。有效期不超过中心会话。</p></div><el-switch v-model="form.refresh_enabled" /></div
+            ><h2>回调与访问</h2
+            ><el-form-item label="后台退出通知地址 · 可留空"
+              ><el-input
+                v-model="form.backchannel_logout_uri"
+                placeholder="https://app.example.com/auth/backchannel-logout" /></el-form-item
+            ><p class="dy-muted"
+              >项目后端接收签名退出通知，并按 sid 清理本地会话。需要接入方实现验签和幂等处理。</p
+            >
+            <el-form-item v-if="form.public" label="应用平台"
+              ><el-radio-group v-model="form.platform"
+                ><el-radio value="spa">浏览器 SPA</el-radio
+                ><el-radio value="native">桌面 / 手机原生应用</el-radio></el-radio-group
+              ></el-form-item
+            >
+            <p v-if="form.platform === 'native'" class="dy-muted"
+              >使用系统浏览器和 PKCE；支持 HTTPS、127.0.0.1 / [::1]
+              回环地址（允许动态端口），或反向域名形式的私有 scheme，如
+              com.example.app:/callback。手机实机仍需验收。</p
+            >
+            <div class="dy-listitem"
+              ><div
+                >允许会话续期<p
+                  >显式请求
+                  offline_access；刷新令牌每次轮换，重放会撤销整个令牌家族。有效期不超过中心会话。</p
+                ></div
+              ><el-switch v-model="form.refresh_enabled" /></div
             ><el-form-item label="登录回调地址 · 每行一个" required
               ><el-input
                 v-model="form.redirectText"
@@ -189,7 +220,11 @@
         v-if="kind === 'apps' && id && view === 'edit'"
         class="dy-panel"
         style="margin-top: 24px"
-        ><h2>项目管理</h2
+        ><h2>项目管理</h2><el-button @click="checkApp">检查接入配置</el-button
+        ><div v-if="checks.length"
+          ><p v-for="item in checks" :key="item.label"
+            >{{ item.passed ? '✓' : '待检查' }} · {{ item.label }}</p
+          ><p class="dy-muted">仅校验配置，不代表回调网络或项目验签通过。</p></div
         ><el-button @click="router.push({ path: '/manage/apps/grants', query: { id } })"
           >准入名单</el-button
         ><el-button @click="router.push({ path: '/manage/apps/members', query: { id } })"
@@ -199,6 +234,22 @@
           >轮换后旧密钥立即失效，需要同步更新项目后端。</p
         ></section
       >
+      <section v-if="kind === 'keys' && id && !form.revoked" class="dy-panel">
+        <h2>轮换 API 凭证</h2
+        ><p class="dy-muted"
+          >新旧凭证在过渡期内均可用，权限和有效期不变。请保存新凭证并更新接入项目。</p
+        >
+        <p v-if="form.previous_until" class="dy-muted"
+          >旧凭证截止：{{ dateText(form.previous_until) }}</p
+        >
+        <p class="dy-muted"
+          >最近调用：{{ dateText(form.last_used_at) }} · {{ form.last_ip || '暂无来源 IP' }}</p
+        >
+        <el-form-item label="过渡小时数"
+          ><el-input-number v-model="overlapHours" :min="0" :max="168"
+        /></el-form-item>
+        <el-button :loading="saving" @click="rotateKey">生成新凭证</el-button>
+      </section>
     </template>
   </div>
 </template>
@@ -207,7 +258,37 @@
   import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import { api, dateText } from '@/api/duoyu'
-  const memberPage=ref(1),memberTotal=ref(0)
+  const checks = ref<any[]>([])
+  async function checkApp() {
+    try {
+      const result = await api('/api/admin/apps/' + id.value + '/checks')
+      checks.value = result.checks
+    } catch (e: any) {
+      ElMessage.error(e.message)
+    }
+  }
+  const overlapHours = ref(24)
+  async function rotateKey() {
+    try {
+      await ElMessageBox.confirm('确认轮换此凭证？新凭证只显示一次。', '轮换 API 凭证')
+    } catch {
+      return
+    }
+    saving.value = true
+    try {
+      const result = await api('/api/admin/keys/' + id.value + '/rotate', 'POST', {
+        overlap_hours: overlapHours.value
+      })
+      secret.value = result.secret
+      baseline.value = snapshot()
+    } catch (e: any) {
+      ElMessage.error(e.message)
+    } finally {
+      saving.value = false
+    }
+  }
+  const memberPage = ref(1),
+    memberTotal = ref(0)
   const route = useRoute(),
     router = useRouter(),
     kind = computed(() => route.path.split('/')[2]),
@@ -310,7 +391,9 @@
         grantText.value = data.map((x) => x.email).join('\n')
       }
       if (view.value === 'members') {
-        const data = await api<any>('/api/admin/apps/' + id.value + '/users?page='+memberPage.value+'&page_size=20')
+        const data = await api<any>(
+          '/api/admin/apps/' + id.value + '/users?page=' + memberPage.value + '&page_size=20'
+        )
         if (current !== generation) return
         members.value = data.items
         memberTotal.value = data.total

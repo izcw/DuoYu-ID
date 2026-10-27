@@ -38,9 +38,9 @@ func (s *Server) requireService(w http.ResponseWriter, r *http.Request, scope st
 		fail(w, 401, "需要 API 凭证")
 		return
 	}
-	var appID string
+	var appID, lastIP string
 	var scopes []string
-	err := s.db.QueryRow(r.Context(), "SELECT id,app_id,scopes FROM api_keys WHERE digest=$1 AND NOT revoked AND (expires_at IS NULL OR expires_at>now())", s.mac(strings.TrimPrefix(header, "Bearer "))).Scan(&key, &appID, &scopes)
+	err := s.db.QueryRow(r.Context(), "SELECT id,app_id,scopes,last_ip FROM api_keys WHERE (digest=$1 OR (previous_digest=$1 AND previous_until>now())) AND NOT revoked AND (expires_at IS NULL OR expires_at>now())", s.mac(strings.TrimPrefix(header, "Bearer "))).Scan(&key, &appID, &scopes, &lastIP)
 	if errors.Is(err, pgx.ErrNoRows) {
 		fail(w, 401, "无效的 API 凭证")
 		return
@@ -58,7 +58,10 @@ func (s *Server) requireService(w http.ResponseWriter, r *http.Request, scope st
 		fail(w, 403, "应用不可用")
 		return
 	}
-	s.db.Exec(r.Context(), "UPDATE api_keys SET last_used_at=now() WHERE id=$1", key)
+	if lastIP != "" && lastIP != remoteIP(r) {
+		s.audit(r.Context(), "", "api.key.source_changed", key, true)
+	}
+	s.db.Exec(r.Context(), "UPDATE api_keys SET last_used_at=now(),last_ip=$2 WHERE id=$1", key, remoteIP(r))
 	return key, app, true
 }
 

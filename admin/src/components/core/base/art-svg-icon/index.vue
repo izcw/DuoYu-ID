@@ -4,7 +4,8 @@
 </template>
 
 <script setup lang="ts">
-  import { Icon } from '@iconify/vue'
+  import { Icon } from '@iconify/vue/offline'
+  import '@/utils/ui/iconify-loader'
 
   defineOptions({ name: 'ArtSvgIcon', inheritAttrs: false })
 

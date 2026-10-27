@@ -142,6 +142,12 @@ export const routeModules: AppRouteRecord[] = [
     },
     children: [
       {
+        path: '/manage/health',
+        name: 'DuoyuHealth',
+        component: '/duoyu/health',
+        meta: { title: '运行状态', icon: 'ri:pulse-line' }
+      },
+      {
         path: '/manage/audit',
         name: 'DuoyuAudit',
         component: '/duoyu/manage',
@@ -193,3 +199,24 @@ export const routeModules: AppRouteRecord[] = [
     ]
   }
 ]
+
+routeModules[0].children!.push({
+  path: 'users/access',
+  name: 'DuoyuManagementAccess',
+  component: '/duoyu/access',
+  meta: { title: '管理权限', isHide: true, activePath: '/manage/users', roles: ['R_SUPER'] }
+})
+const integrations = routeModules.find((r) => r.name === 'Integrations')!
+integrations.meta.roles = ['R_SUPER', 'R_MAINTAINER']
+for (const child of integrations.children || [])
+  child.meta.roles = [
+    'R_SUPER',
+    ...(['DuoyuApps', 'DuoyuEditor0', 'DuoyuDocs'].includes(String(child.name)) ||
+    child.path.includes('/apps/')
+      ? ['R_MAINTAINER']
+      : [])
+  ]
+const operations = routeModules.find((r) => r.name === 'Operations')!
+operations.meta.roles = ['R_SUPER', 'R_AUDITOR']
+for (const child of operations.children || [])
+  child.meta.roles = child.name === 'DuoyuSettings' ? ['R_SUPER'] : ['R_SUPER', 'R_AUDITOR']

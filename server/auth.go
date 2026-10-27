@@ -203,6 +203,10 @@ func (s *Server) artUser(w http.ResponseWriter, r *http.Request) {
 	roles := []string{"R_USER"}
 	if u.Admin {
 		roles = []string{"R_SUPER"}
+	} else if u.ManagementRole == "auditor" {
+		roles = []string{"R_AUDITOR"}
+	} else if u.ManagementRole == "maintainer" {
+		roles = []string{"R_MAINTAINER"}
 	}
 	ok(w, map[string]any{"userId": u.ID, "userName": u.Name, "email": u.Email, "avatar": u.Avatar, "roles": roles, "buttons": []string{}})
 }

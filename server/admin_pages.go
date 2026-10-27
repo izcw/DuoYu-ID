@@ -23,7 +23,7 @@ func (s *Server) adminKeyDetail(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, "SELECT k.id,k.name,k.app_id,a.name AS app_name,k.scopes,k.expires_at,k.revoked,k.created_at FROM api_keys k JOIN apps a ON a.id=k.app_id WHERE k.id=$1", r.PathValue("id"))
+	s.queryList(w, r, "SELECT k.id,k.name,k.app_id,a.name AS app_name,k.scopes,k.expires_at,k.revoked,k.created_at,k.previous_until,k.last_ip,k.last_used_at FROM api_keys k JOIN apps a ON a.id=k.app_id WHERE k.id=$1", r.PathValue("id"))
 }
 func (s *Server) updateKey(w http.ResponseWriter, r *http.Request) {
 	u, yes := s.require(w, r, true)
@@ -121,4 +121,61 @@ func (s *Server) analytics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, map[string]any{"series": series, "projects": ranking, "timezone": "Asia/Shanghai"})
+}
+
+func (s *Server) rotateAPIKey(w http.ResponseWriter, r *http.Request) {
+	u, yes := s.require(w, r, true)
+	if !yes {
+		return
+	}
+	var in struct {
+		Hours int `json:"overlap_hours"`
+	}
+	if decode(r, &in) != nil || in.Hours < 0 || in.Hours > 168 {
+		fail(w, 400, "过渡期为 0–168 小时")
+		return
+	}
+	secret := "dy_" + randomID()
+	until := time.Now().Add(time.Duration(in.Hours) * time.Hour)
+	tag, e := s.db.Exec(r.Context(), "UPDATE api_keys SET previous_digest=digest,previous_until=$3,digest=$2 WHERE id=$1 AND NOT revoked AND (expires_at IS NULL OR expires_at>now()) AND (previous_until IS NULL OR previous_until<=now())", r.PathValue("id"), s.mac(secret), until)
+	if e != nil {
+		fail(w, 503, "暂时无法轮换")
+		return
+	}
+	if tag.RowsAffected() != 1 {
+		fail(w, 409, "凭证失效或仍在过渡期，暂不能再次轮换")
+		return
+	}
+	s.audit(r.Context(), u.ID, "admin.key.rotated", r.PathValue("id"), true)
+	ok(w, map[string]any{"secret": secret, "previous_until": until})
+}
+
+func (s *Server) appChecks(w http.ResponseWriter, r *http.Request) {
+	if _, yes := s.require(w, r, true); !yes {
+		return
+	}
+	a, e := s.app(r.Context(), r.PathValue("id"))
+	if e != nil {
+		fail(w, 400, "项目不存在或已停用")
+		return
+	}
+	checks := []map[string]any{}
+	add := func(label string, passed bool) {
+		checks = append(checks, map[string]any{"label": label, "passed": passed})
+	}
+	add("客户端类型与平台匹配", a.Platform == "web" || a.Public)
+	valid := len(a.Redirects) > 0
+	for _, v := range a.Redirects {
+		valid = valid && s.validAppRedirect(v, a.Platform)
+	}
+	add("登录回调符合当前环境规则", valid)
+	add("S256 PKCE 已强制启用", true)
+	add("后台退出通知已配置", a.BackchannelLogoutURI != "" && s.validLogoutEndpoint(a.BackchannelLogoutURI))
+	add("使用生产模式", !s.dev)
+	var failureID int64
+	if e = s.db.QueryRow(r.Context(), "SELECT coalesce(max(id),0) FROM logout_jobs WHERE app_id=$1 AND last_error<>''", a.ID).Scan(&failureID); e != nil {
+		fail(w, 503, "检查暂不可用")
+		return
+	}
+	ok(w, map[string]any{"last_logout_failure_id": failureID, "checks": checks, "note": "仅校验保存的配置，不代表回调网络可达或项目验签通过。"})
 }
