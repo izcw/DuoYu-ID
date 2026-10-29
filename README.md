@@ -19,6 +19,12 @@
 
 头像存放在中心本地数据目录。业务数据库托管、文件托管、短信和 QQ/微信第三方登录不在当前范围内。“iPhone 扫码”是本项目的二维码与通行密钥确认流程，不是 Sign in with Apple。
 
+## 当前部署与构建约定
+
+正式入口：`https://id.duoyu.link`。宝塔使用 Go 项目统一管理域名、证书和代理，PostgreSQL 数据库为 `duoyu_id`。更新步骤和服务器路径见 [部署文档](docs/deployment.md#已部署的宝塔-go-项目)。
+
+项目固定 pnpm **10.18.0**；可用 `corepack pnpm@10.18.0 --dir admin build` 构建。通行密钥需要 HTTPS；局域网 HTTP IP 不具备浏览器安全上下文，不能用其测试通行密钥。
+
 ## 快速开始
 
 **已有本地环境**：在仓库根目录运行，不要重新生成已有环境密钥。
@@ -144,3 +150,5 @@ data/                 原生运行时签名密钥与头像，不提交 Git
 项目角色配置、默认分配与 OIDC 声明见 [项目角色](docs/project-roles.md)。
 
 项目管理 API 与一键复制 AI 接入资料：见 [使用说明](docs/project-management-api.md) 和 [完整 AI 接入说明](docs/ai-integration.md)。
+
+业务接口的固定响应、错误码、请求编号和升级约定见 [API v1 契约](docs/api-contract.md)。

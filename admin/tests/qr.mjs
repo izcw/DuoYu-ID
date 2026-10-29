@@ -21,7 +21,7 @@ let qrID=''
 try{
  seed();await mobile.goto(env.DUOYU_ORIGIN+'/login');await mobile.locator('#email').fill(email);await mobile.locator('#code').fill('123456');await mobile.locator('#submit').click();await mobile.waitForURL('**/#/account/profile');await mobile.getByRole('button',{name:'添加手机',exact:true}).waitFor()
  const cdp=await phone.newCDPSession(mobile);await cdp.send('WebAuthn.enable');await cdp.send('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',transport:'internal',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}})
- seed();await mobile.getByRole('button',{name:'添加手机',exact:true}).click();await mobile.getByPlaceholder('6 位验证码',{exact:true}).fill('123456');const registered=mobile.waitForResponse(r=>r.url().endsWith('/api/me/passkeys/finish'));await mobile.getByRole('button',{name:'继续',exact:true}).click();assert.equal((await registered).status(),200);await mobile.getByRole('dialog').waitFor({state:'hidden'})
+ seed();await mobile.getByRole('button',{name:'添加手机',exact:true}).click();await mobile.getByPlaceholder('6 位验证码',{exact:true}).click();await mobile.getByPlaceholder('6 位验证码',{exact:true}).fill('123456');const registered=mobile.waitForResponse(r=>r.url().endsWith('/api/me/passkeys/finish'));await mobile.getByRole('button',{name:'继续',exact:true}).click();assert.equal((await registered).status(),200);await mobile.getByRole('dialog').waitFor({state:'hidden'})
  await mobile.waitForURL('**/#/account/profile');
  const credentials=await mobile.evaluate(()=>fetch('/api/me/passkeys').then(r=>r.json()));
  assert.equal(credentials.data.length,1);const credential=credentials.data[0];

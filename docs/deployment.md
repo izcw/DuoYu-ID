@@ -127,7 +127,7 @@ docker compose restart app
 
 ## 运行角色与长期运行
 
-默认 app 为 combined。需要拆分时自行增加 api 与 worker 服务，统一数据库、服务密钥、签名数据与 SMTP 配置；只启 api 会导致队列积压。当前 Compose 未包含代理服务、容器重启策略、外部探活、离机备份或告警发送通道，需要部署侧配置并验证故障恢复。
+默认 app 为 combined。需要拆分时自行增加 api 与 worker 服务，统一数据库、服务密钥、签名数据与 SMTP 配置；只启 api 会导致队列积压。Compose 为应用和数据库配置 unless-stopped 重启策略，但未包含代理服务、外部探活、离机备份或告警发送通道，需要部署侧配置并验证故障恢复。
 
 监控写入数据库和审计，进程或数据库整体不可用时需外部监控发现。备份、轮换和恢复操作见 [运维与恢复](operations.md)。
 
@@ -144,3 +144,47 @@ go build -trimpath -o duoyu ./server
 将二进制与 `admin/dist/` 一起发布，并为 data 目录设置持久存储和运行用户写权限。进程工作目录应包含 admin/dist，不能只复制二进制；Go 模板嵌入二进制，但管理端与登录 CSS 等资源仍由磁盘提供。
 
 由系统服务管理器注入环境变量，设置启动目录、重启策略及日志输出。二进制不自动读取 `.env`；Windows 可使用 `scripts/start.ps1 -EnvFile '你的生产配置文件'` 进行受控验证，但日常生产应配置稳定的进程托管。不要复用开发模式或开发数据库密码。
+
+
+## 已部署的宝塔 Go 项目
+
+当前生产域名为 `https://id.duoyu.link`，在宝塔 **Go 项目 → duoyu_id** 中管理域名、HTTPS 和反向代理，不要重复建立同域名的 PHP 网站。
+
+| 配置 | 位置 |
+| --- | --- |
+| 程序与工作目录 | `/www/wwwroot/duoyu-id` |
+| 程序 | `/www/wwwroot/duoyu-id/duoyu-id` |
+| 管理端与静态资源 | `/www/wwwroot/duoyu-id/admin/dist` |
+| 私密环境变量 | `/www/server/duoyu-id.env`，属主 www，权限 600 |
+| 上传文件及签名密钥 | `/www/wwwroot/duoyu-id/data` |
+| 数据库 | PostgreSQL `duoyu_id`，仅监听回环地址 5432 |
+| Go 监听 | `127.0.0.1:5252` |
+| Nginx 配置 | `/www/server/panel/vhost/nginx/go_duoyu_id.conf` |
+| HTTPS 证书 | `/www/server/panel/vhost/cert/duoyu_id` |
+
+Windows 交叉编译 Linux 版本：
+
+```powershell
+corepack pnpm@10.18.0 --dir admin build
+$env:GOOS='linux'
+$env:GOARCH='amd64'
+$env:CGO_ENABLED='0'
+go build -trimpath -o duoyu-id ./server
+Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
+```
+
+更新前备份数据库、data、环境文件和 Nginx 配置。将二进制与 **同一次构建** 的 admin/dist 上传到暂存目录，校验 SHA-256；停止 Go 项目后替换文件，再在宝塔启动项目。不要覆盖 data、环境文件和数据库，不要向发布包加入 Key.txt、.env.local 或备份文件。
+
+```sh
+# 服务器 root：先创建仅管理员可访问的备份目录
+install -d -m 700 /www/backup/duoyu-release
+runuser -u postgres -- /www/server/pgsql/bin/pg_dump -Fc duoyu_id > /www/backup/duoyu-release/database.dump
+cp -a /www/wwwroot/duoyu-id/data /www/backup/duoyu-release/data
+# 在宝塔启动/重启 Go 项目后验证
+curl --fail https://id.duoyu.link/healthz
+curl --fail https://id.duoyu.link/.well-known/openid-configuration
+```
+
+数据库通过 PostgreSQL 命令创建后，还需在宝塔 **PgSQL → 同步数据库 → 从服务器同步到面板** 登记；面板列表为空不代表数据库不存在。面板密码应与实际连接配置一致，不要误用“从面板同步到服务器”覆盖现有数据。
+
+Go 项目默认 Nginx 模板需要保留 `X-Forwarded-Proto $scheme`，并仅将 `/.well-known/acme-challenge/` 指向证书验证目录；`/.well-known/openid-configuration` 必须转发给 Go。修改域名或重新生成代理后，应复查这两项。使用 TLS 1.2/1.3，认证服务关闭 TLS early data。

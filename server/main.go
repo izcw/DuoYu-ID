@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5"
@@ -313,6 +315,9 @@ func (s *Server) routes() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := randomID()
 		w.Header().Set("X-Request-ID", requestID)
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("X-Duoyu-API-Version", "1")
+		}
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
 		r = s.withClientIP(r)
 		if c, e := r.Cookie("duoyu_session"); e == nil {
@@ -339,19 +344,17 @@ func (s *Server) routes() http.Handler {
 		m.ServeHTTP(w, r)
 	})
 }
-func ok(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": v, "msg": "成功"})
-}
-func fail(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{"code": status, "msg": msg})
-}
 func decode(r *http.Request, v any) error {
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
-	return d.Decode(v)
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	var extra any
+	if err := d.Decode(&extra); err != io.EOF {
+		return errors.New("request must contain a single JSON value")
+	}
+	return nil
 }
 func normalizeEmail(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
@@ -457,7 +460,13 @@ func (s *Server) newSession(w http.ResponseWriter, r *http.Request, id, amr stri
 	return e
 }
 func truncate(v string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	if len(v) > n {
+		for n > 0 && !utf8.RuneStart(v[n]) {
+			n--
+		}
 		return v[:n]
 	}
 	return v

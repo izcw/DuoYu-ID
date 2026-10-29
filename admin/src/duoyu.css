@@ -805,3 +805,23 @@ input.dy-manual-entry:autofill {
 .dy-account-project-link .el-image,.dy-account-project-link img{width:100%;height:100%;object-fit:contain}
 
 .dy-heading-actions{display:flex;flex-wrap:wrap;gap:8px}.dy-heading-actions .el-button{margin-left:0}
+
+/* Shared compact form details; preserve the existing panel and input language. */
+.dy-page .el-button + .el-button { margin-left: 0; }
+.dy-page .el-form-item__label { line-height: 1.6; padding-bottom: 8px; }
+.dy-page .el-form-item__error { position: static; line-height: 1.5; padding-top: 6px; }
+.dy-page .el-form-item__content { min-width: 0; }
+.dy-page .el-table .cell { overflow-wrap: anywhere; }
+.dy-page .el-pagination { flex-wrap: wrap; gap: 6px; }
+.dy-choice-options .el-checkbox:focus-within,
+.dy-choice-options .el-radio:focus-within { outline: 2px solid #727782; outline-offset: 2px; }
+.dy-page .el-button.is-disabled { cursor: not-allowed; }
+@media (max-width: 600px) {
+  .dy-heading { flex-wrap: wrap; gap: 12px; }
+  .dy-panel { padding: 18px; }
+  .dy-toolbar { gap: 8px; }
+  .dy-form-footer { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dy-page *, .dy-page *::before, .dy-page *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+}

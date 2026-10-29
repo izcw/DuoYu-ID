@@ -96,3 +96,10 @@ node tests/mail-template.mjs
 `server/password_policy_test.go` 覆盖 6–64 个 Unicode 字符、空格密码、10/60/360/2160 分钟锁定递增、并发失败、锁定期间正确密码阻止、成功密码登录清零、邮箱重置解锁、HTTP 429 与 Retry-After、并发分配唯一数字账号。
 
 开发环境构建并启动后，在 `admin` 目录执行 `node tests/account-policy.mjs`，验证账号 ID、昵称编辑保存、按账号 ID 搜索，以及 1440px/390px 操作按钮同行和页面宽度。脚本使用临时账号并清理，不发送邮件。`node tests/mail-template.mjs` 同时检查两种模板没有 4px 顶部边框。
+
+
+## 隔离回归与接口契约
+
+本轮验收使用独立 PostgreSQL 容器、工作目录与 5253 端口；不复用开发用户数据。测试环境没有 SMTP 密码，浏览器设置 SKIP_MAIL=true。测试脚本默认仍采用 localhost:5252 与开发容器名；隔离执行时须同时替换副本中的端口及容器名，不要改正式配置。多项目退出通知测试需要 combined 角色，api 角色不会处理后台退出队列。
+
+业务响应契约见 api-contract.md。Go 测试额外覆盖 JSON 尾随内容、多值输入和 UTF-8 截断，以及成功/错误字段、请求编号、版本和禁止缓存。浏览器测试使用虚拟认证器，不能代替实体 iPhone 和系统密钥提供程序验收。
