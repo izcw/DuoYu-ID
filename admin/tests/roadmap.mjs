@@ -12,7 +12,7 @@ const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chr
 const errors=[]
 const admin=await browser.newPage(),member=await browser.newPage()
 for(const page of [admin,member]){page.on('pageerror',e=>errors.push(e.message));await page.route('**/api/auth/code',r=>r.abort());await page.route('**/api/service/mail',r=>r.abort());await page.route('https://api.iconify.design/**',r=>r.abort())}
-const api=(page,path,method='GET',body)=>page.evaluate(async({path,method,body})=>{const r=await fetch(path,{method,headers:{'X-Duoyu-Request':'1','Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,...await r.json()}},{path,method,body})
+const api=(page,path,method='GET',body)=>page.evaluate(async({path,method,body})=>{const r=await fetch(path,{method,headers:{'X-Duoyu-Request':'1','X-Duoyu-Legal-Version':'2026-10-29','X-Duoyu-Adult':'true','Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,...await r.json()}},{path,method,body})
 try{
  sql(`INSERT INTO users(id,email,name) VALUES('${uid}','${email}','Operations test');INSERT INTO apps(id,name,secret_hash,redirects,logout_redirects,public) VALUES('${app}','Operations project','',ARRAY['http://localhost:8199/callback'],ARRAY[]::text[],true);INSERT INTO api_keys(id,name,digest,app_id,scopes) VALUES('${key}','Operations key','${mac('fixture-'+suffix)}','${app}',ARRAY['app:read']);INSERT INTO challenges(email,purpose,digest,expires_at) VALUES('${email}','login','${mac(email+'|login|123456')}',now()+interval '5 minutes')`)
  await admin.goto('http://localhost:5252/login')

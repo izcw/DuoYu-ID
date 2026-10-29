@@ -5,7 +5,7 @@
         class="dy-header-username"
         :title="store.info.userName"
         >{{ store.info.userName }}</span
-      ></div
+      ><span v-if="store.info.roles?.includes('R_SUPER')" class="dy-header-admin-badge">超级管理员</span></div
     ><template #dropdown
       ><ElDropdownMenu
         ><ElDropdownItem command="profile">账号与安全</ElDropdownItem
@@ -52,7 +52,19 @@
     white-space: nowrap;
     line-height: 1.5;
   }
+  .dy-header-admin-badge {
+    flex-shrink: 0;
+    padding: 3px 6px;
+    border-radius: 4px;
+    background: #171717;
+    color: #fff;
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
   @media (max-width: 640px) {
+    .dy-header-user { gap: 6px; }
+    .dy-header-admin-badge { font-size: 10px; padding: 3px 4px; }
     .dy-header-username {
       max-width: 88px;
     }

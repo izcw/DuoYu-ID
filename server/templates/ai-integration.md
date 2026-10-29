@@ -9,7 +9,7 @@
 - 项目管理 API：{{ORIGIN}}/api/management
 - OpenAPI：GET {{ORIGIN}}/api/management/openapi.json（同样使用管理凭证）
 - 管理凭证从本地环境变量 DUOYU_MANAGEMENT_API_KEY 读取。没有时请用户在账号中心“项目管理 API”创建，不要索要账号密码或 SMTP 授权码。
-- Bearer 管理凭证、业务邮件 API Key、OIDC client_secret 是三类独立凭证，不能混用。管理凭证绝不能放入浏览器、扩展包、前端环境变量、Git 或日志。
+- 项目管理和业务邮件使用同一类开发者 Bearer 凭证，按 scope 和项目范围授权；OIDC client_secret 用于用户登录客户端认证，与开发者凭证独立。管理凭证绝不能放入浏览器、扩展包、前端环境变量、Git 或日志。
 - 所有 API 返回 {code,msg,data}，必须先检查 HTTP 状态。401=凭证无效，403=权限或项目范围不足，400=字段错误，409=幂等参数冲突，410=创建结果密钥重放窗口过期，412=项目版本变化，428=缺少 If-Match，429=限流，503=服务异常。
 - 仅开发模式允许 HTTP 本机或本机网卡私有 IP。生产必须 HTTPS；开发 HTTP 网站回调仅允许 localhost / 127.0.0.1。Discovery issuer 必须与配置完全一致，不能关闭 issuer、签名或证书校验。
 
@@ -130,3 +130,13 @@ curl --fail-with-body -X PATCH "$DUOYU_ISSUER/api/management/projects/$DUOYU_CLI
 - 扩展验证真实扩展ID、回调与 origin、后台重启后的会话恢复；SPA 验证 CORS 与无 client_secret。
 - 自动化测试不得发送真实验证码或通知邮件。真实设备/收件验收由人工执行并记录。
 - 最终报告提供项目ID、issuer、回调、非敏感配置、代码修改和测试结果，明确未完成的真实部署/设备项。不要打印管理凭证、客户端密钥、用户令牌或验证码。
+
+
+## MCP 自动化
+
+统一开发者凭证可连接 {{ORIGIN}}/mcp（Streamable HTTP，Authorization: Bearer），先调用 get_integration_guide 和 list_projects。创建项目先 upload_project_logo，再 create_project（idempotency_key）；修改先 get_project 获取 etag，再 update_project（if_match）。项目服务共用该凭证但必须另授 app:read/mail:send/mail:read，并指定 X-Duoyu-Project。MCP 方法参数为 project_id 与对应 body。不要发送凭证到前端、第三方网址或 Git。
+
+
+## 成年声明与法律文件
+
+自建登录表单须读取 GET {{ORIGIN}}/api/legal，将 terms_url/privacy_url 提供给用户，默认不勾选，确认用户年满18周岁并已阅读同意后，才向相应登录/验证码接口发送 X-Duoyu-Legal-Version: version 和 X-Duoyu-Adult: true。不得自动代用户勾选或默认声明成年；这不是实名年龄核验。标准OIDC跳转登录由中心页面完成该步骤，令牌端点协议不变。

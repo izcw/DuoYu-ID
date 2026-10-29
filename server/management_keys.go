@@ -18,7 +18,7 @@ func (s *Server) listManagementKeys(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, `SELECT id,name,scopes,all_projects,expires_at,revoked,created_at,last_used_at,ARRAY(SELECT app_id FROM management_api_grants WHERE key_id=k.id) AS app_ids FROM management_api_keys k ORDER BY created_at DESC`)
+	s.queryList(w, r, `SELECT id,name,scopes,all_projects,expires_at,revoked,created_at,last_used_at,ARRAY(SELECT app_id FROM management_api_grants WHERE key_id=k.id UNION SELECT k.app_id WHERE k.app_id IS NOT NULL) AS app_ids FROM api_keys k ORDER BY created_at DESC`)
 }
 func (s *Server) createManagementKey(w http.ResponseWriter, r *http.Request) {
 	owner, yes := s.require(w, r, true)
@@ -45,7 +45,7 @@ func (s *Server) createManagementKey(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[scope] = true
 	}
-	id, secret := "mgmt_"+randomID()[:20], "dy_mgmt_"+randomID()
+	id, secret := "mgmt_"+randomID()[:20], "dy_api_"+randomID()
 	var expiry *time.Time
 	if !in.Permanent {
 		v := time.Now().Add(time.Duration(in.Days) * 24 * time.Hour)
@@ -58,7 +58,7 @@ func (s *Server) createManagementKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, "INSERT INTO management_api_keys(id,name,digest,owner_id,scopes,all_projects,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)", id, strings.TrimSpace(in.Name), s.mac(secret), owner.ID, in.Scopes, in.All, expiry); err != nil {
+	if _, err = tx.Exec(ctx, "INSERT INTO api_keys(id,name,digest,owner_id,scopes,all_projects,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)", id, strings.TrimSpace(in.Name), s.mac(secret), owner.ID, in.Scopes, in.All, expiry); err != nil {
 		fail(w, 503, "创建凭证失败")
 		return
 	}
@@ -81,7 +81,7 @@ func (s *Server) revokeManagementKey(w http.ResponseWriter, r *http.Request) {
 	if !yes {
 		return
 	}
-	tag, err := s.db.Exec(r.Context(), "UPDATE management_api_keys SET revoked=true WHERE id=$1", r.PathValue("key"))
+	tag, err := s.db.Exec(r.Context(), "UPDATE api_keys SET revoked=true WHERE id=$1", r.PathValue("key"))
 	if err != nil {
 		fail(w, 503, "撤销失败")
 		return

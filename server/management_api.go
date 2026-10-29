@@ -24,18 +24,24 @@ type managementAuth struct {
 	Revision int64
 }
 
-var managementScopes = []string{"projects:read", "projects:create", "projects:update", "projects:rotate"}
+var managementScopes = []string{"projects:read", "projects:create", "projects:update", "projects:rotate", "app:read", "mail:send", "mail:read"}
 
 func (s *Server) registerManagementRoutes(m *http.ServeMux) {
-	m.HandleFunc("GET /api/admin/project-api-keys", s.listManagementKeys)
-	m.HandleFunc("POST /api/admin/project-api-keys", s.createManagementKey)
-	m.HandleFunc("POST /api/admin/project-api-keys/{key}/revoke", s.revokeManagementKey)
+	m.HandleFunc("PUT /api/admin/developer-keys/{key}", s.updateDeveloperKey)
+	m.HandleFunc("POST /api/admin/developer-keys/{key}/rotate", func(w http.ResponseWriter, r *http.Request) {
+		r.SetPathValue("id", r.PathValue("key"))
+		s.rotateAPIKey(w, r)
+	})
+	m.HandleFunc("GET /api/admin/developer-keys", s.listManagementKeys)
+	m.HandleFunc("POST /api/admin/developer-keys", s.createManagementKey)
+	m.HandleFunc("POST /api/admin/developer-keys/{key}/revoke", s.revokeManagementKey)
 	m.HandleFunc("GET /api/admin/ai-integration", s.adminAIGuide)
 	m.HandleFunc("GET /api/management/openapi.json", s.managementProxy("projects:read", false, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(s.serviceOpenAPI())
 	}))
 	m.HandleFunc("GET /api/management/projects", s.managementProxy("projects:read", false, s.managementProjects))
+	m.HandleFunc("GET /api/management/projects/{id}/checks", s.managementProxy("projects:read", true, s.appChecks))
 	m.HandleFunc("GET /api/management/projects/{id}", s.managementProxy("projects:read", true, s.managementProject))
 	m.HandleFunc("POST /api/management/projects", s.managementProxy("projects:create", false, s.managementSaveProject))
 	m.HandleFunc("PATCH /api/management/projects/{id}", s.managementProxy("projects:update", true, s.managementSaveProject))
@@ -59,19 +65,19 @@ func (s *Server) managementProxy(scope string, project bool, next http.HandlerFu
 	return func(w http.ResponseWriter, r *http.Request) {
 		// These credentials are for local tools and server processes, never browser JS.
 		if r.Header.Get("Origin") != "" {
-			fail(w, 403, "项目管理 API 仅供后端或命令行调用，请勿在浏览器中使用管理凭证")
+			fail(w, 403, "开发者接口仅供后端或工具调用，请勿在浏览器中使用凭证")
 			return
 		}
 		header := r.Header.Get("Authorization")
 		if !strings.HasPrefix(header, "Bearer ") || len(header) > 512 {
-			fail(w, 401, "需要独立的项目管理 API 凭证")
+			fail(w, 401, "需要开发者 API 凭证")
 			return
 		}
 		var a managementAuth
 		var owner string
-		err := s.db.QueryRow(r.Context(), "SELECT id,owner_id,scopes,all_projects FROM management_api_keys WHERE digest=$1 AND NOT revoked AND (expires_at IS NULL OR expires_at>now())", s.mac(strings.TrimPrefix(header, "Bearer "))).Scan(&a.ID, &owner, &a.Scopes, &a.All)
+		err := s.db.QueryRow(r.Context(), "SELECT id,owner_id,scopes,all_projects FROM api_keys WHERE (digest=$1 OR (previous_digest=$1 AND previous_until>now())) AND NOT revoked AND (expires_at IS NULL OR expires_at>now())", s.mac(strings.TrimPrefix(header, "Bearer "))).Scan(&a.ID, &owner, &a.Scopes, &a.All)
 		if errors.Is(err, pgx.ErrNoRows) {
-			fail(w, 401, "项目管理凭证无效、已到期或撤销")
+			fail(w, 401, "开发者凭证无效、已到期或撤销")
 			return
 		}
 		if err != nil {
@@ -83,8 +89,8 @@ func (s *Server) managementProxy(scope string, project bool, next http.HandlerFu
 			fail(w, 401, "凭证所属管理员不可用")
 			return
 		}
-		if scope != "" && !slices.Contains(a.Scopes, scope) || scope == "" && !slices.Contains(a.Scopes, "projects:create") && !slices.Contains(a.Scopes, "projects:update") {
-			fail(w, 403, "项目管理凭证缺少所需权限")
+		if scope != "*" && (scope != "" && !slices.Contains(a.Scopes, scope) || scope == "" && !slices.Contains(a.Scopes, "projects:create") && !slices.Contains(a.Scopes, "projects:update")) {
+			fail(w, 403, "开发者凭证缺少所需权限")
 			return
 		}
 		if s.limited(r, "management-key:"+a.ID, 120, time.Minute) {
@@ -95,7 +101,7 @@ func (s *Server) managementProxy(scope string, project bool, next http.HandlerFu
 			fail(w, 403, "凭证无权管理该项目")
 			return
 		}
-		if _, err = s.db.Exec(r.Context(), "UPDATE management_api_keys SET last_used_at=now() WHERE id=$1", a.ID); err != nil {
+		if _, err = s.db.Exec(r.Context(), "UPDATE api_keys SET last_used_at=now() WHERE id=$1", a.ID); err != nil {
 			fail(w, 503, "凭证暂不可用")
 			return
 		}

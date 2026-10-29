@@ -15,12 +15,12 @@ import (
 )
 
 func validKeyScopes(scopes []string) bool {
-	if len(scopes) < 1 || len(scopes) > 3 {
+	if len(scopes) < 1 || len(scopes) > len(managementScopes) {
 		return false
 	}
 	seen := map[string]bool{}
 	for _, scope := range scopes {
-		if seen[scope] || !slices.Contains([]string{"app:read", "mail:send", "mail:read"}, scope) {
+		if seen[scope] || !slices.Contains(managementScopes, scope) {
 			return false
 		}
 		seen[scope] = true
@@ -40,7 +40,7 @@ func (s *Server) requireService(w http.ResponseWriter, r *http.Request, scope st
 	}
 	var appID, lastIP string
 	var scopes []string
-	err := s.db.QueryRow(r.Context(), "SELECT id,app_id,scopes,last_ip FROM api_keys WHERE (digest=$1 OR (previous_digest=$1 AND previous_until>now())) AND NOT revoked AND (expires_at IS NULL OR expires_at>now())", s.mac(strings.TrimPrefix(header, "Bearer "))).Scan(&key, &appID, &scopes, &lastIP)
+	err := s.db.QueryRow(r.Context(), "SELECT id,coalesce(app_id,''),scopes,last_ip FROM api_keys WHERE (digest=$1 OR (previous_digest=$1 AND previous_until>now())) AND NOT revoked AND (expires_at IS NULL OR expires_at>now()) AND (owner_id IS NULL OR EXISTS(SELECT 1 FROM users WHERE id=api_keys.owner_id AND enabled AND admin))", s.mac(strings.TrimPrefix(header, "Bearer "))).Scan(&key, &appID, &scopes, &lastIP)
 	if errors.Is(err, pgx.ErrNoRows) {
 		fail(w, 401, "无效的 API 凭证")
 		return
@@ -51,6 +51,19 @@ func (s *Server) requireService(w http.ResponseWriter, r *http.Request, scope st
 	}
 	if !slices.Contains(scopes, scope) {
 		fail(w, 403, "凭证缺少 "+scope+" 权限")
+		return
+	}
+	if project := r.Header.Get("X-Duoyu-Project"); project != "" {
+		appID = project
+	}
+	if appID == "" {
+		fail(w, 400, "请通过 X-Duoyu-Project 指定目标项目")
+		return
+	}
+	var allowed bool
+	err = s.db.QueryRow(r.Context(), "SELECT (app_id=$2 OR all_projects OR EXISTS(SELECT 1 FROM management_api_grants WHERE key_id=$1 AND app_id=$2)) FROM api_keys WHERE id=$1", key, appID).Scan(&allowed)
+	if err != nil || !allowed {
+		fail(w, 403, "凭证无权访问目标项目")
 		return
 	}
 	app, err = s.app(r.Context(), appID)

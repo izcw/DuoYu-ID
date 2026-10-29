@@ -149,5 +149,5 @@ func (s *Server) approveQR(w http.ResponseWriter, r *http.Request) {
 func (s *Server) scanPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	s.templates.ExecuteTemplate(w, "scan.html", nil)
+	s.templates.ExecuteTemplate(w, "scan.html", map[string]string{"LegalVersion": legalVersion})
 }

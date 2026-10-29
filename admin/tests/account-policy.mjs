@@ -1,3 +1,4 @@
+import {acceptLegal} from './consent.mjs'
 import { chromium } from '@playwright/test'
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -24,14 +25,14 @@ try {
   await page.locator('[data-mode="password"]').click()
   await page.locator('#email').fill(env.DUOYU_ADMIN_EMAIL)
   await page.locator('#password').fill(env.DUOYU_ADMIN_PASSWORD)
-  await page.locator('#submit').click()
+  await acceptLegal(page);await page.locator('#submit').click()
   await page.waitForURL('**/#/account/profile')
   await page.goto('http://localhost:5252/#/manage/users/detail?id='+id)
   await page.getByRole('heading',{name:'昵称测试',exact:true}).waitFor()
   assert.match(await page.locator('.dy-page').innerText(),new RegExp(accountID))
   assert.equal(await page.getByRole('button',{name:'保存昵称',exact:true}).count(),0)
   assert.equal(await page.locator('.dy-panel input').count(),0)
-  const denied=await page.evaluate(async id=>(await fetch('/api/admin/users/'+id,{method:'PATCH',headers:{'Content-Type':'application/json','X-Duoyu-Request':'1'},body:JSON.stringify({name:'不应成功'})})).status,id);assert.equal(denied,403)
+  const denied=await page.evaluate(async id=>(await fetch('/api/admin/users/'+id,{method:'PATCH',headers:{'Content-Type':'application/json','X-Duoyu-Request':'1','X-Duoyu-Legal-Version':'2026-10-29','X-Duoyu-Adult':'true'},body:JSON.stringify({name:'不应成功'})})).status,id);assert.equal(denied,403)
   const appA=id+'-a',appB=id+'-b';sql(`INSERT INTO apps(id,name,redirects,public) VALUES('${appA}','项目归属甲',ARRAY['http://localhost:8199/callback'],true),('${appB}','项目归属乙',ARRAY['http://localhost:8199/callback'],true);INSERT INTO app_users(app_id,user_id) VALUES('${appA}','${id}'),('${appB}','${id}');`)
   // Disposable authenticated user session: no SMTP and no administrator impersonation API.
   const token=randomBytes(32).toString('base64url'),hash=createHash('sha256').update(token).digest('hex');sql(`INSERT INTO sessions(hash,user_id,expires_at,amr) VALUES('${hash}','${id}',now()+interval '1 hour','pwd')`)

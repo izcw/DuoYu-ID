@@ -197,6 +197,12 @@ func newServer() (*Server, error) {
 }
 func (s *Server) routes() http.Handler {
 	m := http.NewServeMux()
+	m.HandleFunc("GET /api/legal", func(w http.ResponseWriter, r *http.Request) {
+		ok(w, map[string]any{"version": legalVersion, "minimum_age": 18, "age_verification": "self_declaration", "terms_url": s.origin + "/legal/terms", "privacy_url": s.origin + "/legal/privacy", "contact": "2405824084@qq.com"})
+	})
+	m.HandleFunc("GET /legal/terms", s.legalPage)
+	m.HandleFunc("GET /legal/privacy", s.legalPage)
+	m.Handle("/mcp", s.managementProxy("*", false, s.serveMCP))
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if s.db.Ping(r.Context()) != nil {
 			fail(w, 503, "数据库不可用")
@@ -326,7 +332,7 @@ func (s *Server) routes() http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
-		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/login" {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/login" || r.URL.Path == "/mcp" {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		if !s.dev {
@@ -338,6 +344,24 @@ func (s *Server) routes() http.Handler {
 			if !s.allowedBrowserOrigin(r) || r.Header.Get("X-Duoyu-Request") != "1" {
 				fail(w, 403, "请求来源不受信任")
 				return
+			}
+		}
+		needsLegal := legalProtected(r)
+		if r.URL.Path == "/api/auth/code" {
+			if _, err := s.current(r); err == nil {
+				needsLegal = false
+			}
+		}
+		if needsLegal && !legalAccepted(r) {
+			fail(w, 400, "请阅读并同意服务条款和隐私政策")
+			return
+		}
+		if legalProtected(r) && legalAccepted(r) {
+			if user, err := s.current(r); err == nil {
+				if _, err = s.db.Exec(r.Context(), "INSERT INTO user_legal_acceptances(user_id,version,adult_asserted) VALUES($1,$2,true) ON CONFLICT(user_id,version) DO UPDATE SET last_accepted_at=now()", user.ID, legalVersion); err != nil {
+					fail(w, 503, "暂时无法记录协议确认，请重试")
+					return
+				}
 			}
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 3<<20)
@@ -447,6 +471,11 @@ func (s *Server) newSession(w http.ResponseWriter, r *http.Request, id, amr stri
 
 	if c, e := r.Cookie("duoyu_session"); e == nil {
 		if _, err := tx.Exec(r.Context(), "DELETE FROM sessions WHERE hash=$1", digest(c.Value)); err != nil {
+			return err
+		}
+	}
+	if legalAccepted(r) {
+		if _, err := tx.Exec(r.Context(), "INSERT INTO user_legal_acceptances(user_id,version,adult_asserted) VALUES($1,$2,true) ON CONFLICT(user_id,version) DO UPDATE SET last_accepted_at=now()", id, legalVersion); err != nil {
 			return err
 		}
 	}

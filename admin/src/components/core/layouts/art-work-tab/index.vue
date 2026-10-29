@@ -7,6 +7,7 @@
       tabStyle === 'tab-card' ? 'py-1 border-b border-[var(--art-card-border)]' : '',
       tabStyle === 'tab-google' ? 'pt-1 pb-0 border-b border-[var(--art-card-border)]' : ''
     ]"
+    style="padding-bottom: 10px;"
   >
     <div class="w-full overflow-hidden" ref="scrollRef">
       <ul
@@ -60,7 +61,7 @@
       </ul>
     </div>
 
-    <div class="flex">
+    <div class="flex" style="padding-left: 10px;">
       <div
         class="flex-cc art-card-xs relative top-0 size-8 leading-8 text-center c-p tad-200 hover:!bg-hover-color"
         role="button"

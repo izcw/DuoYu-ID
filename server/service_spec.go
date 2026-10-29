@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 func (s *Server) serviceOpenAPI() map[string]any {
 	security := []map[string]any{{"ApiKey": []string{}}}
 	responses := map[string]any{"200": map[string]string{"description": "JSON envelope: code, msg, data. 邮件结果必须检查 data.status；accepted 表示 SMTP 接受，不代表送达。unknown 禁止盲目重发。"}, "400": map[string]string{"description": "参数错误"}, "401": map[string]string{"description": "凭证无效、到期或撤销"}, "403": map[string]string{"description": "权限不足或项目停用"}, "404": map[string]string{"description": "邮件记录不存在于本项目"}, "409": map[string]string{"description": "幂等键对应的内容不同"}, "429": map[string]string{"description": "请求或邮件配额超限"}, "503": map[string]string{"description": "服务暂不可用"}}
@@ -13,6 +15,18 @@ func (s *Server) serviceOpenAPI() map[string]any {
 		"code": map[string]any{"type": "integer"}, "msg": map[string]any{"type": "string"}, "data": map[string]any{"nullable": true}, "error": map[string]any{"type": "object", "nullable": true, "properties": map[string]any{"code": map[string]string{"type": "string"}, "retryable": map[string]string{"type": "boolean"}}}, "request_id": map[string]string{"type": "string"}, "api_version": map[string]any{"type": "string", "enum": []string{"1"}},
 	}}}
 	s.extendManagementOpenAPI(spec)
+	for path, value := range spec["paths"].(map[string]any) {
+		if strings.HasPrefix(path, "/api/service/") {
+			for _, operation := range value.(map[string]any) {
+				op, ok := operation.(map[string]any)
+				if !ok {
+					continue
+				}
+				params, _ := op["parameters"].([]map[string]any)
+				op["parameters"] = append(params, map[string]any{"name": "X-Duoyu-Project", "in": "header", "required": true, "description": "目标项目 ID，凭证必须具有该项目访问权", "schema": map[string]string{"type": "string"}})
+			}
+		}
+	}
 	for _, path := range spec["paths"].(map[string]any) {
 		for _, operation := range path.(map[string]any) {
 			op, yes := operation.(map[string]any)

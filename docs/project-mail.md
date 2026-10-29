@@ -4,7 +4,7 @@
 
 ## 开通
 
-1. 注册接入项目。在“应用接入 → API 凭证”创建专用凭证，授予 `mail:send` 和 `mail:read`，可永久有效。已有凭证保持原权限，需主动编辑授权。
+1. 注册接入项目。在“开发者接入 → 凭证与 MCP”创建专用凭证，授予 `mail:send` 和 `mail:read`，可永久有效。已有凭证保持原权限，需主动编辑授权。
 2. 将凭证保存在项目后端的环境变量中。它不是 OIDC client secret，也不是用户 access token，不能放浏览器或手机应用代码中。
 3. 接口统一为生产 HTTPS 域名；开发环境 localhost 可使用 HTTP。服务端 API 使用 Bearer 鉴权，不需要伪造 Origin 或 Cookie，其他管理 API 的同源检查保持不变。
 
@@ -80,3 +80,5 @@ Idempotency-Key: order-123-completed-v1
 当前使用 PostgreSQL 持久队列。queued/retry 任务在重启后继续执行；发送中断超过 2 分钟转为 unknown，不自动重发。SMTP 正文提交前的明确临时失败最多尝试 3 次，正文提交后的不确定结果保守处理。无法严格保证 SMTP 端“恰好发送一次”。
 
 业务 verification 在队列中最多保留 5 分钟，其他项目邮件 24 小时；账号验证码按实际 challenge 过期时间处理。项目业务验证码有效期仍由项目管理。需要真实送达/退信状态时，还需供应商回执。部署角色、加密密钥、迁移及恢复步骤见 [运维文档](operations.md)。
+
+统一凭证若未绑定单一旧项目，HTTP 请求必须携带 `X-Duoyu-Project: 项目ID`。MCP 使用 send_mail/get_mail_status 并传 project_id；与 HTTP 共用授权和队列，详见 developer-access.md。

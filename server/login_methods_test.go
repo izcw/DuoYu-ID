@@ -58,6 +58,8 @@ func testLoginMethods(t *testing.T, s *Server, origin string) {
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Origin", origin)
 		r.Header.Set("X-Duoyu-Request", "1")
+		r.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+		r.Header.Set("X-Duoyu-Adult", "true")
 		if flow {
 			r.Header.Set("X-Duoyu-Auth-Request", id)
 		}

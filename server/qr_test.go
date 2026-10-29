@@ -22,6 +22,8 @@ func testQRLogin(t *testing.T, s *Server, origin string) {
 		r, _ := http.NewRequest("POST", origin+path, bytes.NewReader(b))
 		r.Header.Set("Origin", origin)
 		r.Header.Set("X-Duoyu-Request", "1")
+		r.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+		r.Header.Set("X-Duoyu-Adult", "true")
 		r.Header.Set("Content-Type", "application/json")
 		resp, e := c.Do(r)
 		if e != nil {

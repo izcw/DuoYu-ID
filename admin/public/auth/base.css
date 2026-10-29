@@ -1,3 +1,5 @@
 :root{color-scheme:light;--auth-control-height:42px;--auth-foreground:#111111;--auth-muted:#727782;--auth-radius:5px;--auth-background:#ffffff}
 
 input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=hidden]),textarea{font-size:14px;border:1px solid #ededee;color:#000000}
+
+.legal-consent{display:flex;align-items:flex-start;gap:8px;margin:24px auto 0;font-size:12px;line-height:1.8;color:#727782;max-width:420px;text-align:left}.legal-consent input{flex:none;width:15px;height:15px;margin:3px 0 0;accent-color:#111}.legal-consent a{color:#111;text-decoration:underline;text-underline-offset:3px}.legal-consent input:focus-visible,.legal-consent a:focus-visible{outline:2px solid #727782;outline-offset:3px}

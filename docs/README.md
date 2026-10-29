@@ -29,3 +29,7 @@
 
 - [业务 API v1 契约与兼容策略](api-contract.md)
 - [2026-10-29 优化与验收记录](refinement-2026-10-29.md)
+
+- [统一开发者接入与 MCP](developer-access.md)
+
+- 服务条款与隐私政策公开页：`/legal/terms`、`/legal/privacy`；正文源文件为 `server/templates/terms.html` 和 `server/templates/privacy.html`。

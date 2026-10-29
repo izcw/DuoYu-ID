@@ -103,3 +103,6 @@ node tests/mail-template.mjs
 本轮验收使用独立 PostgreSQL 容器、工作目录与 5253 端口；不复用开发用户数据。测试环境没有 SMTP 密码，浏览器设置 SKIP_MAIL=true。测试脚本默认仍采用 localhost:5252 与开发容器名；隔离执行时须同时替换副本中的端口及容器名，不要改正式配置。多项目退出通知测试需要 combined 角色，api 角色不会处理后台退出队列。
 
 业务响应契约见 api-contract.md。Go 测试额外覆盖 JSON 尾随内容、多值输入和 UTF-8 截断，以及成功/错误字段、请求编号、版本和禁止缓存。浏览器测试使用虚拟认证器，不能代替实体 iPhone 和系统密钥提供程序验收。
+
+
+统一开发者接入与 MCP 额外验收见 [实现报告](mcp-implementation-tests-2026-10-29.md)。`node tests/developer-mcp.mjs` 使用本地开发配置，验证 UI 与真实 MCP HTTP 调用；Go 的 mcp_test.go 覆盖迁移、官方 SDK、工具映射和授权边界。

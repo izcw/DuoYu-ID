@@ -1,3 +1,4 @@
+import {acceptLegal} from './consent.mjs'
 import {chromium} from '@playwright/test'
 import fs from 'node:fs'
 import {execFileSync} from 'node:child_process'
@@ -13,7 +14,7 @@ const id='role_ui_'+randomBytes(6).toString('hex');
 const sql=q=>execFileSync('docker',['exec','duoyu-postgres-dev','psql','-U','duoyu','-d','duoyu','-v','ON_ERROR_STOP=1','-q','-c',q],{stdio:['ignore','pipe','pipe']});
 try{
  sql(`INSERT INTO apps(id,name,redirects,public) VALUES('${id}','角色界面测试',ARRAY['http://localhost:8199/callback'],true)`);
- await page.goto('http://localhost:5252/login');await page.locator('[data-mode="password"]').click();await page.locator('#email').fill(env.DUOYU_ADMIN_EMAIL);await page.locator('#password').fill(env.DUOYU_ADMIN_PASSWORD);await page.locator('#submit').click();await page.waitForURL('**/#/account/profile');await page.waitForLoadState('networkidle');
+ await page.goto('http://localhost:5252/login');await page.locator('[data-mode="password"]').click();await page.locator('#email').fill(env.DUOYU_ADMIN_EMAIL);await page.locator('#password').fill(env.DUOYU_ADMIN_PASSWORD);await acceptLegal(page);await page.locator('#submit').click();await page.waitForURL('**/#/account/profile');await page.waitForLoadState('networkidle');
  await page.goto('http://localhost:5252/#/manage/apps/roles?id='+id);await page.getByRole('heading',{name:'项目角色',exact:true}).waitFor();await page.locator('.el-table__body tr').first().waitFor();assert.equal(await page.locator('.el-table__body tr').count(),2);
  await page.getByRole('button',{name:'新增角色',exact:true}).click();await page.getByRole('heading',{name:'新增角色',exact:true}).waitFor();await page.getByPlaceholder('例如：管理员').fill('编辑员');await page.getByPlaceholder('例如：admin、user、editor').fill('editor');await page.locator('textarea').fill('内容维护');await page.locator('.el-switch').click();await page.getByRole('button',{name:'创建角色',exact:true}).click();await page.waitForURL('**/roles?id='+id);await page.locator('.el-table__body tr').filter({hasText:'编辑员'}).waitFor();
  sql(`INSERT INTO app_users(app_id,user_id) SELECT '${id}',id FROM users WHERE admin`);

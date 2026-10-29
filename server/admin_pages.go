@@ -135,7 +135,7 @@ func (s *Server) rotateAPIKey(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "过渡期为 0–168 小时")
 		return
 	}
-	secret := "dy_" + randomID()
+	secret := "dy_api_" + randomID()
 	until := time.Now().Add(time.Duration(in.Hours) * time.Hour)
 	tag, e := s.db.Exec(r.Context(), "UPDATE api_keys SET previous_digest=digest,previous_until=$3,digest=$2 WHERE id=$1 AND NOT revoked AND (expires_at IS NULL OR expires_at>now()) AND (previous_until IS NULL OR previous_until<=now())", r.PathValue("id"), s.mac(secret), until)
 	if e != nil {

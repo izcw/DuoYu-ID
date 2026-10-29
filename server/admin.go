@@ -399,7 +399,7 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request) {
 		v := time.Now().Add(time.Duration(in.Days) * 24 * time.Hour)
 		expiry = &v
 	}
-	_, e := s.db.Exec(r.Context(), "INSERT INTO api_keys(id,name,digest,app_id,scopes,expires_at) VALUES($1,$2,$3,$4,$5,$6)", id, strings.TrimSpace(in.Name), s.mac(secret), in.AppID, in.Scopes, expiry)
+	_, e := s.db.Exec(r.Context(), "INSERT INTO api_keys(id,name,digest,app_id,scopes,expires_at,owner_id) VALUES($1,$2,$3,$4,$5,$6,$7)", id, strings.TrimSpace(in.Name), s.mac(secret), in.AppID, in.Scopes, expiry, u.ID)
 	if e != nil {
 		fail(w, 500, "创建失败")
 		return

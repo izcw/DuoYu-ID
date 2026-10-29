@@ -502,7 +502,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		s.cookie(w, name, s.mac(id), 600)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	s.templates.ExecuteTemplate(w, "login.html", map[string]any{"App": app, "Logo": logo, "RequestID": id, "LoginMethods": methods, "Origin": s.origin})
+	s.templates.ExecuteTemplate(w, "login.html", map[string]any{"App": app, "Logo": logo, "RequestID": id, "LoginMethods": methods, "Origin": s.origin, "LegalVersion": legalVersion})
 }
 func (s *Server) authContext(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")

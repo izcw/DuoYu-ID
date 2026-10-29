@@ -32,6 +32,8 @@ func testManagementAPI(t *testing.T, s *Server, origin string) {
 			r.AddCookie(cookie)
 			r.Header.Set("Origin", origin)
 			r.Header.Set("X-Duoyu-Request", "1")
+			r.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+			r.Header.Set("X-Duoyu-Adult", "true")
 		}
 		if token != "" {
 			r.Header.Set("Authorization", "Bearer "+token)
@@ -47,7 +49,7 @@ func testManagementAPI(t *testing.T, s *Server, origin string) {
 	}
 	key := func(scopes []string, apps []string) (string, string) {
 		t.Helper()
-		status, out, _ := call("POST", "/api/admin/project-api-keys", map[string]any{"name": "API test", "scopes": scopes, "app_ids": apps, "permanent": true}, "", true, nil)
+		status, out, _ := call("POST", "/api/admin/developer-keys", map[string]any{"name": "API test", "scopes": scopes, "app_ids": apps, "permanent": true}, "", true, nil)
 		if status != 200 {
 			t.Fatal(status, out)
 		}
@@ -195,13 +197,13 @@ func testManagementAPI(t *testing.T, s *Server, origin string) {
 	if status, _, _ := call("POST", "/api/management/projects", payload, token, false, headers); status != 410 {
 		t.Fatal("expired result created another app")
 	}
-	if status, _, _ := call("POST", "/api/admin/project-api-keys/"+keyID+"/revoke", map[string]any{}, "", true, nil); status != 200 {
+	if status, _, _ := call("POST", "/api/admin/developer-keys/"+keyID+"/revoke", map[string]any{}, "", true, nil); status != 200 {
 		t.Fatal("revoke")
 	}
 	if status, _, _ := call("GET", base, nil, token, false, nil); status != 401 {
 		t.Fatal("revoked key usable")
 	}
-	s.db.Exec(ctx, "UPDATE management_api_keys SET expires_at=now()-interval '1 second' WHERE digest=$1", s.mac(readOnly))
+	s.db.Exec(ctx, "UPDATE api_keys SET expires_at=now()-interval '1 second' WHERE digest=$1", s.mac(readOnly))
 	if status, _, _ := call("GET", "/api/management/projects", nil, readOnly, false, nil); status != 401 {
 		t.Fatal("expired key usable")
 	}

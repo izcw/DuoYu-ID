@@ -29,6 +29,8 @@ func testProjectBlacklist(t *testing.T, s *Server, origin string) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Origin", origin)
 		req.Header.Set("X-Duoyu-Request", "1")
+		req.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+		req.Header.Set("X-Duoyu-Adult", "true")
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)

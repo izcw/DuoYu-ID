@@ -1,3 +1,4 @@
+import {acceptLegal} from './consent.mjs'
 import { chromium } from '@playwright/test'
 import fs from 'node:fs'
 import assert from 'node:assert/strict'
@@ -24,7 +25,7 @@ try {
   await page.locator('#email').fill(env.DUOYU_ADMIN_EMAIL)
   if (process.env.SKIP_MAIL !== 'true') {
   const sent = page.waitForResponse(r => r.url().endsWith('/api/auth/code'))
-  await page.locator('#send').click()
+  await acceptLegal(page);await page.locator('#send').click()
   assert.equal((await sent).status(), 200)
   await page.locator('.el-message--success').waitFor()
   assert.match(await page.locator('.el-message--success').textContent(), /本机测试收件箱/)
@@ -49,7 +50,7 @@ try {
   await page.getByRole('button', {name:'隐藏密码',exact:true}).click()
   assert.equal(await page.locator('#password').getAttribute('type'), 'password')
   await page.screenshot({path:'../test-results/login-password.png',fullPage:true})
-  await page.locator('#submit').click()
+  await acceptLegal(page);await page.locator('#submit').click()
   await page.waitForURL('**/#/account/profile')
   await page.getByRole('heading', { name: '账号与安全' }).waitFor()
   await page.screenshot({ path: '../test-results/account.png', fullPage: true })
@@ -85,9 +86,9 @@ try {
     await page.getByRole('button', {name:'继续',exact:true}).click()
     assert.equal((await registered).status(),200)
     await page.getByRole('dialog').waitFor({state:'hidden'})
-    await page.evaluate(() => fetch('/api/auth/logout', {method:'POST',headers:{'X-Duoyu-Request':'1'}}))
+    await page.evaluate(() => fetch('/api/auth/logout', {method:'POST',headers:{'X-Duoyu-Request':'1','X-Duoyu-Legal-Version':'2026-10-29','X-Duoyu-Adult':'true'}}))
     await page.goto('http://localhost:5252/login')
-    await page.locator('#passkey').click()
+    await acceptLegal(page);await page.locator('#passkey').click()
     await page.waitForURL('**/#/account/profile')
     await page.getByRole('heading', {name:'账号与安全'}).waitFor()
     await page.getByRole('button', {name:'移除',exact:true}).last().click()

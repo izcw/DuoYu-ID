@@ -152,3 +152,9 @@ data/                 原生运行时签名密钥与头像，不提交 Git
 项目管理 API 与一键复制 AI 接入资料：见 [使用说明](docs/project-management-api.md) 和 [完整 AI 接入说明](docs/ai-integration.md)。
 
 业务接口的固定响应、错误码、请求编号和升级约定见 [API v1 契约](docs/api-contract.md)。
+
+## 开发者接入与 MCP
+
+项目服务与项目管理共用一套凭证和授权范围，管理端在“开发者接入 → 凭证与 MCP”创建、编辑、轮换、撤销并复制连接配置。MCP 入口为 `/mcp`，目前支持手动 Bearer 的 Streamable HTTP 客户端；用户登录仍使用 OIDC。详见 [开发者接入](docs/developer-access.md)。
+
+登录需主动确认已满18周岁并同意[服务条款与隐私政策](docs/legal.md)，支持公开阅读与后端协议版本校验。年龄声明不是实名年龄核验。

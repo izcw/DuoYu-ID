@@ -23,6 +23,8 @@ func testUploadProjectLogo(t *testing.T, client *http.Client, origin string) str
 		r.Header.Set("Content-Type", m.FormDataContentType())
 		r.Header.Set("Origin", origin)
 		r.Header.Set("X-Duoyu-Request", "1")
+		r.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+		r.Header.Set("X-Duoyu-Adult", "true")
 		resp, err := c.Do(r)
 		if err != nil {
 			t.Fatal(err)

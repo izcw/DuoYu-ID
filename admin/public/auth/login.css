@@ -29,3 +29,5 @@
 #qr-device{margin-top:16px}
 
 #qr-device-secure{display:flex;align-items:center;justify-content:center;margin-top:12px;font-size:13px}
+
+.legal-consent + .primary{margin-top:14px}

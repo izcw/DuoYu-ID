@@ -1,3 +1,4 @@
+import {acceptLegal} from './consent.mjs'
 import {chromium} from '@playwright/test'
 import fs from 'node:fs'
 import assert from 'node:assert/strict'
@@ -8,7 +9,7 @@ const page=await browser.newPage({viewport:{width:1440,height:1000}})
 let total=21
 const rows=()=>Array.from({length:total},(_,i)=>({id:String(i+1),account_id:String(1000000000+i),name:'分页用户 '+i,email:`page${i}@example.com`,avatar:'',enabled:true,public:true,scopes:[],status:'queued',category:'notification',created_at:'2026-10-28T00:00:00Z',expires_at:'2026-10-29T00:00:00Z',last_login_at:'2026-10-28T00:00:00Z',first_login_at:'2026-10-28T00:00:00Z',login_count:1,agent:'分页设备',action:'test',actor:'test',target:'test',success:true,app_id:'pagination-fixture',app_name:'分页项目'}))
 try{
- await page.goto('http://localhost:5252/login');await page.locator('[data-mode=password]').click();await page.locator('#email').fill(env.DUOYU_ADMIN_EMAIL);await page.locator('#password').fill(env.DUOYU_ADMIN_PASSWORD);await page.locator('#submit').click();await page.waitForURL('**/#/account/profile')
+ await page.goto('http://localhost:5252/login');await page.locator('[data-mode=password]').click();await page.locator('#email').fill(env.DUOYU_ADMIN_EMAIL);await page.locator('#password').fill(env.DUOYU_ADMIN_PASSWORD);await acceptLegal(page);await page.locator('#submit').click();await page.waitForURL('**/#/account/profile')
  await page.route('**/api/**',async route=>{
  const u=new URL(route.request().url()),p=u.pathname
  if(p==='/api/auth/code'||p==='/api/service/mail')return route.abort()

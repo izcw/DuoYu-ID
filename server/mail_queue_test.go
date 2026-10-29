@@ -16,7 +16,7 @@ func testMailQueue(t *testing.T, s *Server) {
 	}
 	var count int
 	s.db.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count)
-	if count != 20 {
+	if count != 22 {
 		t.Fatal("migration versions", count)
 	}
 	s.db.Exec(ctx, "UPDATE schema_migrations SET checksum='tampered' WHERE version='schema.sql'")

@@ -88,6 +88,7 @@ func TestIntegration(t *testing.T) {
 	srv.Listener = listener
 	srv.Start()
 	defer srv.Close()
+	t.Run("Legal consent and documents", func(t *testing.T) { testLegalConsent(t, s, origin) })
 	t.Run("Project blacklist", func(t *testing.T) { testProjectBlacklist(t, s, origin) })
 	t.Run("Account password policy and numeric IDs", func(t *testing.T) { testAccountPolicy(t, s) })
 	t.Run("QR login ownership and single use", func(t *testing.T) { testQRLogin(t, s, origin) })
@@ -95,6 +96,8 @@ func TestIntegration(t *testing.T) {
 	t.Run("Discovery, origins and protocol faults", func(t *testing.T) { testProtocolContract(t, s, origin) })
 	t.Run("Authenticator enrollment and login", func(t *testing.T) { testAuthenticator(t, s, origin) })
 	t.Run("Account projects and avatars", func(t *testing.T) { testAccountProjects(t, s, origin) })
+	t.Run("Developer credential data migration", func(t *testing.T) { testDeveloperMigration(t, s) })
+	t.Run("Unified developer credentials and MCP", func(t *testing.T) { testDeveloperMCP(t, s, origin) })
 	t.Run("Management API", func(t *testing.T) { testManagementAPI(t, s, origin) })
 	t.Run("Project roles", func(t *testing.T) { testProjectRoles(t, s, origin) })
 	t.Run("Project login methods", func(t *testing.T) { testLoginMethods(t, s, origin) })
@@ -113,6 +116,8 @@ func TestIntegration(t *testing.T) {
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Origin", origin)
 		r.Header.Set("X-Duoyu-Request", "1")
+		r.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+		r.Header.Set("X-Duoyu-Adult", "true")
 		res, e := client.Do(r)
 		if e != nil {
 			t.Fatal(e)

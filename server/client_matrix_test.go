@@ -45,6 +45,8 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		r, _ := http.NewRequest(method, origin+path, strings.NewReader(string(b)))
 		r.Header.Set("Origin", origin)
 		r.Header.Set("X-Duoyu-Request", "1")
+		r.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+		r.Header.Set("X-Duoyu-Adult", "true")
 		r.Header.Set("Content-Type", "application/json")
 		res, e := client.Do(r)
 		if e != nil {
@@ -785,6 +787,8 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		r, _ := http.NewRequest("POST", origin+"/api/auth/login", strings.NewReader(`{}`))
 		r.Header.Set("Origin", "http://localhost:8199")
 		r.Header.Set("X-Duoyu-Request", "1")
+		r.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+		r.Header.Set("X-Duoyu-Adult", "true")
 		resp, e := http.DefaultClient.Do(r)
 		if e != nil {
 			t.Fatal(e)

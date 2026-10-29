@@ -29,6 +29,8 @@ func testProjectRoles(t *testing.T, s *Server, origin string) {
 		r := httptest.NewRequest(method, origin+path, strings.NewReader(string(raw)))
 		r.Header.Set("Origin", origin)
 		r.Header.Set("X-Duoyu-Request", "1")
+		r.Header.Set("X-Duoyu-Legal-Version", legalVersion)
+		r.Header.Set("X-Duoyu-Adult", "true")
 		if auth {
 			r.AddCookie(cookie)
 		}

@@ -47,7 +47,7 @@ export const routeModules: AppRouteRecord[] = [
     name: 'Integrations',
     component: '/index/index',
     meta: {
-      title: '应用接入',
+      title: '开发者接入',
       icon: 'ri:apps-2-line',
       roles: ['R_SUPER']
     },
@@ -66,7 +66,8 @@ export const routeModules: AppRouteRecord[] = [
         name: 'DuoyuKeys',
         component: '/duoyu/manage',
         meta: {
-          title: 'API 凭证',
+          title: '旧凭证入口',
+          isHide: true,
           icon: 'ri:key-2-line'
         }
       },
@@ -214,8 +215,9 @@ routeModules[0].children!.push({
 })
 const integrations = routeModules.find((r) => r.name === 'Integrations')!
 integrations.children!.push(...[
- {path:'/manage/project-api',name:'DuoyuProjectAPI',component:'/duoyu/project-api',meta:{title:'项目管理 API',icon:'ri:key-2-line',roles:['R_SUPER']}},
- {path:'/manage/project-api/new',name:'DuoyuProjectAPINew',component:'/duoyu/project-api',meta:{title:'创建管理凭证',isHide:true,activePath:'/manage/project-api',roles:['R_SUPER']}},
+ {path:'/manage/project-api',name:'DuoyuProjectAPI',component:'/duoyu/project-api',meta:{title:'凭证与 MCP',icon:'ri:key-2-line',roles:['R_SUPER']}},
+ {path:'/manage/project-api/edit',name:'DuoyuDeveloperKeyEdit',component:'/duoyu/project-api',meta:{title:'编辑开发者凭证',isHide:true,activePath:'/manage/project-api',roles:['R_SUPER']}},
+ {path:'/manage/project-api/new',name:'DuoyuProjectAPINew',component:'/duoyu/project-api',meta:{title:'创建开发者凭证',isHide:true,activePath:'/manage/project-api',roles:['R_SUPER']}},
  {path:'/manage/apps/roles',name:'DuoyuProjectRoles',component:'/duoyu/project-roles',meta:{title:'项目角色',isHide:true,activePath:'/manage/apps'}},
  {path:'/manage/apps/roles/edit',name:'DuoyuProjectRoleEdit',component:'/duoyu/project-roles',meta:{title:'编辑项目角色',isHide:true,activePath:'/manage/apps'}},
  {path:'/manage/apps/member-role',name:'DuoyuProjectMemberRole',component:'/duoyu/project-roles',meta:{title:'用户项目角色',isHide:true,activePath:'/manage/apps'}}
