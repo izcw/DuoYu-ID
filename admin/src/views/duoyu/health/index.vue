@@ -1,5 +1,5 @@
 <template>
-  <div class="dy-page">
+  <div class="dy-page art-page-view">
     <header class="dy-heading"
       ><div><h1>运行状态</h1><p>查看认证配置、队列积压与退出通知记录</p></div
       ><el-button :loading="loading" @click="load">刷新状态</el-button></header
@@ -47,9 +47,7 @@
         >
         <p class="dy-muted"
           >数据库
-          {{
-            diagnostic.database_bytes ? (diagnostic.database_bytes / 1048576).toFixed(1) : '—'
-          }}
+          {{ diagnostic.database_bytes ? (diagnostic.database_bytes / 1048576).toFixed(1) : '—' }}
           MB · 24 小时退出投递 P95 {{ diagnostic.logout_p95_ms ?? '—' }} ms</p
         >
         <p class="dy-muted">配置可读取不代表公网证书、手机扫码或邮件送达已经通过验收。</p></section
@@ -62,10 +60,14 @@
           ><el-button text @click="status = 'failed'">查看</el-button></div
         ><div class="dy-listitem"
           ><div>邮件结果不确定<p>先核对发送记录，避免重复通知或验证码。</p></div
-          ><el-button v-if="superAdmin" text @click="$router.push('/manage/mail')">邮件记录</el-button></div
+          ><el-button v-if="superAdmin" text @click="$router.push('/manage/mail')"
+            >邮件记录</el-button
+          ></div
         ><div class="dy-listitem"
           ><div>接入异常<p>核对客户端类型、回调地址、PKCE 和准入规则。</p></div
-          ><el-button v-if="superAdmin" text @click="$router.push('/manage/docs')">接入文档</el-button></div
+          ><el-button v-if="superAdmin" text @click="$router.push('/manage/docs')"
+            >接入文档</el-button
+          ></div
         ><p class="dy-muted">{{ updated ? '最近刷新：' + updated : '等待首次读取' }}</p></section
       >
     </div>
@@ -88,12 +90,30 @@
         v-loading="loading"
         empty-text="暂无符合条件的退出通知"
         @expand-change="loadAttempts"
-        ><el-table-column type="expand"
+        ><el-table-column
+          type="index"
+          label="序号"
+          width="76"
+          :index="(index: number) => (page - 1) * 20 + index + 1"
+        /><el-table-column type="expand"
           ><template #default="{ row }"
             ><div style="padding: 16px"
               ><p v-if="attemptErrors[row.id]" role="alert">{{ attemptErrors[row.id] }}</p
-              ><el-table :data="attemptRows[row.id] || []" empty-text="暂无尝试记录"
-                ><el-table-column label="时间" min-width="180"
+              ><el-table
+                :data="
+                  (attemptRows[row.id] || []).slice(
+                    ((attemptPages[row.id] || 1) - 1) * 20,
+                    (attemptPages[row.id] || 1) * 20
+                  )
+                "
+                empty-text="暂无尝试记录"
+                ><el-table-column
+                  type="index"
+                  label="序号"
+                  width="76"
+                  :index="
+                    (index: number) => ((attemptPages[row.id] || 1) - 1) * 20 + index + 1
+                  " /><el-table-column label="时间" min-width="180"
                   ><template #default="{ row: attempt }">{{
                     dateText(attempt.created_at)
                   }}</template></el-table-column
@@ -101,7 +121,14 @@
                   prop="error_class"
                   label="错误类别" /><el-table-column
                   prop="duration_ms"
-                  label="耗时（ms）" /></el-table></div></template></el-table-column
+                  label="耗时（ms）" /></el-table
+              ><el-pagination
+                v-if="(attemptRows[row.id]?.length || 0) > 20"
+                :current-page="attemptPages[row.id] || 1"
+                @update:current-page="attemptPages[row.id] = $event"
+                :page-size="20"
+                :total="attemptRows[row.id]?.length || 0"
+                layout="total, prev, pager, next" /></div></template></el-table-column
         ><el-table-column prop="id" label="事件" width="85" /><el-table-column
           prop="app_id"
           label="项目标识"
@@ -124,6 +151,7 @@
         ></el-table
       >
       <el-pagination
+        v-if="total > 20"
         v-model:current-page="page"
         :page-size="20"
         :total="total"
@@ -157,11 +185,13 @@
     { label: '待发邮件', key: 'mail_pending', note: '认证与项目邮件队列' },
     { label: '邮件结果不确定', key: 'mail_unknown', note: '需核对后再处理' }
   ]
+  const attemptPages = ref<Record<string, number>>({})
   const attemptRows = ref<Record<string, any[]>>({}),
     attemptErrors = ref<Record<string, string>>({})
   async function loadAttempts(row: any, expanded: any[]) {
     if (!expanded.includes(row)) return
     attemptErrors.value[row.id] = ''
+    attemptPages.value[row.id] = 1
     try {
       attemptRows.value[row.id] = await api('/api/admin/logout-events/' + row.id + '/attempts')
     } catch (e: any) {
@@ -207,6 +237,8 @@
       diagnostic.value = d
       rows.value = list.items
       total.value = list.total
+      if (page.value > Math.max(1, Math.ceil(total.value / 20)))
+        page.value = Math.max(1, Math.ceil(total.value / 20))
       updated.value = new Date().toLocaleString('zh-CN')
     } catch (e: any) {
       if (current === generation) error.value = e.message

@@ -32,7 +32,7 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 	secret := "matrix-client-secret"
 	redirect := "http://localhost:8199/callback"
 	for _, id := range []string{pub, conf, other} {
-		_, err = s.db.Exec(ctx, "INSERT INTO apps(id,name,secret_hash,redirects,logout_redirects,public) VALUES($1,$1,$2,$3,$4,$5)", id, s.mac(secret), []string{redirect}, []string{"http://localhost:8199/"}, id != conf)
+		_, err = s.db.Exec(ctx, "INSERT INTO apps(id,name,secret_hash,redirects,logout_redirects,public,allowed_origins) VALUES($1,$1,$2,$3,$4,$5,ARRAY['http://localhost:8199'])", id, s.mac(secret), []string{redirect}, []string{"http://localhost:8199/"}, id != conf)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -158,6 +158,72 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		json.NewDecoder(resp.Body).Decode(&out)
 		return resp.StatusCode, out
 	}
+
+	t.Run("project blacklist permanently revokes issued tokens", func(t *testing.T) {
+		s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=true WHERE id=$1", pub)
+		defer s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=false WHERE id=$1", pub)
+		f, c := code(pub, "openid offline_access")
+		status, out := exchange(f, c, "", nil)
+		if status != 200 {
+			t.Fatal("token fixture", status)
+		}
+		access := out["access_token"].(string)
+		refresh := out["refresh_token"].(string)
+		pending, pendingCode := code(pub, "openid")
+		if _, err := s.db.Exec(ctx, "INSERT INTO app_blacklist(app_id,identifier,user_id) VALUES($1,'matrix-block',$2)", pub, uid); err != nil {
+			t.Fatal(err)
+		}
+		if status, _ := info(access); status == 200 {
+			t.Fatal("blacklisted access token still valid")
+		}
+		if status, _ := exchange(pending, pendingCode, "", nil); status == 200 {
+			t.Fatal("blacklisted pending code accepted")
+		}
+		if !s.allowed(ctx, uid, other) {
+			t.Fatal("blacklist affected other project")
+		}
+		s.db.Exec(ctx, "DELETE FROM app_blacklist WHERE app_id=$1", pub)
+		if status, _ := info(access); status == 200 {
+			t.Fatal("removed blacklist revived old access token")
+		}
+		res, err := http.PostForm(discovery["token_endpoint"].(string), url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {pub}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode == 200 {
+			t.Fatal("removed blacklist revived refresh token")
+		}
+	})
+
+	t.Run("disabled method rejects access refresh and pending code", func(t *testing.T) {
+		s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=true WHERE id=$1", pub)
+		defer s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=false,login_methods=$2 WHERE id=$1", pub, allLoginMethods())
+		f, c := code(pub, "openid offline_access")
+		status, out := exchange(f, c, "", nil)
+		if status != 200 {
+			t.Fatal(status)
+		}
+		pending, pendingCode := code(pub, "openid")
+		s.db.Exec(ctx, "UPDATE apps SET login_methods='{}' WHERE id=$1", pub)
+		if status, _ := info(out["access_token"].(string)); status != 401 {
+			t.Fatal("disabled access", status)
+		}
+		if status, _ := exchange(pending, pendingCode, "", nil); status == 200 {
+			t.Fatal("disabled code exchanged")
+		}
+		resp, err := http.PostForm(discovery["token_endpoint"].(string), url.Values{"grant_type": {"refresh_token"}, "client_id": {pub}, "refresh_token": {out["refresh_token"].(string)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == 200 {
+			t.Fatal("disabled refresh succeeded")
+		}
+		if !s.loginAMRAllowed(ctx, other, "pwd") {
+			t.Fatal("other project affected")
+		}
+	})
 	t.Run("confidential and public signed-token SSO", func(t *testing.T) {
 		for _, app := range []string{conf, pub} {
 			f, c := code(app, "openid profile email")
@@ -475,8 +541,20 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		login(browser)
 	})
 	t.Run("API key overlap rotation expiry and revocation", func(t *testing.T) {
-		s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid)
+
+		var originalAdmin string
+		if err := s.db.QueryRow(ctx, "SELECT id FROM users WHERE admin").Scan(&originalAdmin); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", originalAdmin); err != nil {
+			t.Fatal(err)
+		}
+		defer s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", originalAdmin)
+		if _, err := s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid); err != nil {
+			t.Fatal(err)
+		}
 		defer s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", uid)
+
 		old := "dy_rotation_fixture"
 		s.db.Exec(ctx, "INSERT INTO api_keys(id,name,digest,app_id,scopes) VALUES('rotation-key','rotation',$1,$2,ARRAY['app:read'])", s.mac(old), pub)
 		call := func(secret string) int {
@@ -560,42 +638,40 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 			t.Fatal("monitor falsely healthy")
 		}
 	})
-	t.Run("management roles deny cross-project and writes", func(t *testing.T) {
-		s.db.Exec(ctx, "UPDATE users SET management_role='maintainer' WHERE id=$1", uid)
-		defer s.db.Exec(ctx, "UPDATE users SET management_role='none' WHERE id=$1", uid)
-		s.db.Exec(ctx, "INSERT INTO app_maintainers(user_id,app_id) VALUES($1,$2)", uid, pub)
-		defer s.db.Exec(ctx, "DELETE FROM app_maintainers WHERE user_id=$1", uid)
-		status, out := request(browser, "GET", "/api/admin/apps?page=1", nil)
-		if status != 200 || out["data"].(map[string]any)["total"] != float64(1) {
-			t.Fatal("unscoped projects", status)
+
+	t.Run("single super administrator and no delegated roles", func(t *testing.T) {
+		if _, err := s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid); err == nil {
+			t.Fatal("second super administrator accepted")
 		}
-		for _, path := range []string{"/api/admin/apps/" + other, "/api/admin/apps/" + other + "/grants", "/api/admin/users", "/api/admin/keys", "/api/admin/diagnostics", "/api/admin/mail"} {
-			if status, _ := request(browser, "GET", path, nil); status != 403 {
-				t.Fatal("cross-project access", path, status)
+		for _, role := range []string{"auditor", "maintainer"} {
+			if _, err := s.db.Exec(ctx, "UPDATE users SET management_role=$1 WHERE id=$2", role, uid); err == nil {
+				t.Fatal("delegated role accepted")
 			}
 		}
-		if status, _ := request(browser, "GET", "/api/admin/apps/"+pub, nil); status != 200 {
-			t.Fatal("assigned project denied", status)
-		}
-		if status, _ := request(browser, "POST", "/api/admin/apps", map[string]any{}); status != 403 {
-			t.Fatal("maintainer created project")
+		for _, path := range []string{"/api/admin/apps", "/api/admin/users", "/api/admin/audit", "/api/admin/diagnostics"} {
+			if status, _ := request(browser, "GET", path, nil); status != 403 {
+				t.Fatal("ordinary account reached management API", path, status)
+			}
 		}
 		if status, _ := request(browser, "PUT", "/api/admin/users/"+uid+"/access", map[string]any{"role": "auditor"}); status != 403 {
 			t.Fatal("role escalation")
 		}
-		s.db.Exec(ctx, "UPDATE users SET management_role='auditor' WHERE id=$1", uid)
-		for _, path := range []string{"/api/admin/audit", "/api/admin/diagnostics", "/api/admin/logout-events"} {
-			if status, _ := request(browser, "GET", path, nil); status != 200 {
-				t.Fatal("audit denied", path, status)
-			}
-		}
-		if status, _ := request(browser, "POST", "/api/admin/logout-events/1/retry", map[string]any{}); status != 403 {
-			t.Fatal("auditor mutation")
-		}
 	})
 	t.Run("logout failure metadata manual retry and audit correlation", func(t *testing.T) {
-		s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid)
+
+		var originalAdmin string
+		if err := s.db.QueryRow(ctx, "SELECT id FROM users WHERE admin").Scan(&originalAdmin); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", originalAdmin); err != nil {
+			t.Fatal(err)
+		}
+		defer s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", originalAdmin)
+		if _, err := s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid); err != nil {
+			t.Fatal(err)
+		}
 		defer s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", uid)
+
 		receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
 		defer receiver.Close()
 		var id int64
@@ -630,8 +706,20 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		s.db.Exec(ctx, "DELETE FROM logout_jobs WHERE id=$1", id)
 	})
 	t.Run("server pagination searches beyond newest 200", func(t *testing.T) {
-		s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid)
+
+		var originalAdmin string
+		if err := s.db.QueryRow(ctx, "SELECT id FROM users WHERE admin").Scan(&originalAdmin); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", originalAdmin); err != nil {
+			t.Fatal(err)
+		}
+		defer s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", originalAdmin)
+		if _, err := s.db.Exec(ctx, "UPDATE users SET admin=true WHERE id=$1", uid); err != nil {
+			t.Fatal(err)
+		}
 		defer s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", uid)
+
 		s.db.Exec(ctx, "INSERT INTO users(id,email,name) SELECT 'page-'||n,'page-'||n||'@example.invalid','Pagination' FROM generate_series(1,230) n")
 		status, out := request(browser, "GET", "/api/admin/users?page=12&page_size=20&q=Pagination", nil)
 		if status != 200 {

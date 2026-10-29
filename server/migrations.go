@@ -20,7 +20,7 @@ func (s *Server) migrate(ctx context.Context) error {
 	if _, err = tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations(version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"); err != nil {
 		return err
 	}
-	for _, name := range []string{"schema.sql", "migrations/002_mail_queue.sql", "migrations/003_session_binding.sql", "migrations/004_refresh_tokens.sql", "migrations/005_logout_events.sql", "migrations/006_policy_revocation.sql", "migrations/007_operations.sql", "migrations/008_monitoring.sql"} {
+	for _, name := range []string{"schema.sql", "migrations/002_mail_queue.sql", "migrations/003_session_binding.sql", "migrations/004_refresh_tokens.sql", "migrations/005_logout_events.sql", "migrations/006_policy_revocation.sql", "migrations/007_operations.sql", "migrations/008_monitoring.sql", "migrations/009_account_policy.sql", "migrations/010_passkey_device.sql", "migrations/011_qr_enrollment.sql", "migrations/012_single_super_admin.sql", "migrations/013_project_logo.sql", "migrations/014_project_blacklist.sql", "migrations/015_extension_origins.sql", "migrations/016_login_methods.sql", "migrations/017_totp.sql", "migrations/018_project_roles.sql", "migrations/019_avatar_paths.sql", "migrations/020_management_api.sql"} {
 		body, err := assets.ReadFile(name)
 		if err != nil {
 			return err

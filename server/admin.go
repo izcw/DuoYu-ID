@@ -70,7 +70,7 @@ func (s *Server) users(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, "SELECT id,email,name,avatar,admin,enabled,created_at FROM users WHERE email ILIKE $1 OR name ILIKE $1 ORDER BY created_at DESC LIMIT 200", "%"+truncate(r.URL.Query().Get("q"), 100)+"%")
+	s.queryList(w, r, "SELECT id,account_id,email,name,avatar,admin,enabled,created_at,password_locked_until,password_lock_level,"+accountProjectsSQL+" AS projects FROM users WHERE email ILIKE $1 OR name ILIKE $1 OR account_id ILIKE $1 OR EXISTS(SELECT 1 FROM app_users au JOIN apps a ON a.id=au.app_id WHERE au.user_id=users.id AND a.name ILIKE $1) ORDER BY created_at DESC LIMIT 200", "%"+truncate(r.URL.Query().Get("q"), 100)+"%")
 }
 func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	u, yes := s.require(w, r, true)
@@ -78,13 +78,22 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Enabled bool `json:"enabled"`
+		Enabled *bool   `json:"enabled"`
+		Name    *string `json:"name"`
 	}
 	if decode(r, &in) != nil {
 		fail(w, 400, "请求错误")
 		return
 	}
 	id := r.PathValue("id")
+	if in.Name != nil {
+		fail(w, 403, "昵称只能由账号本人在账号与安全中修改")
+		return
+	}
+	if in.Enabled == nil {
+		fail(w, 400, "请选择需要更新的字段")
+		return
+	}
 	if id == u.ID {
 		fail(w, 400, "不能停用当前管理员账号")
 		return
@@ -100,7 +109,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "账号不存在或为受保护的管理员")
 		return
 	}
-	if !in.Enabled {
+	if !*in.Enabled {
 		tx.Exec(r.Context(), "DELETE FROM sessions WHERE user_id=$1", id)
 		tx.Exec(r.Context(), "DELETE FROM access_tokens WHERE user_id=$1", id)
 	}
@@ -136,13 +145,13 @@ func (s *Server) apps(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, "SELECT id,name,description,redirects,logout_redirects,public,enabled,restricted,created_at,platform,refresh_enabled,backchannel_logout_uri FROM apps ORDER BY created_at DESC LIMIT 200")
+	s.queryList(w, r, "SELECT id,name,description,redirects,logout_redirects,public,enabled,restricted,created_at,platform,refresh_enabled,backchannel_logout_uri,logo FROM apps ORDER BY created_at DESC LIMIT 200")
 }
 func (s *Server) appUsers(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, `SELECT u.id,u.email,u.name,u.enabled,a.first_login_at,a.last_login_at,a.login_count FROM app_users a JOIN users u ON u.id=a.user_id WHERE a.app_id=$1 ORDER BY a.last_login_at DESC LIMIT 200`, r.PathValue("id"))
+	s.queryList(w, r, `SELECT u.id,u.email,u.name,u.avatar,u.enabled,a.first_login_at,a.last_login_at,a.login_count,a.role_id,ar.name AS role_name,ar.role_key FROM app_users a JOIN users u ON u.id=a.user_id JOIN app_roles ar ON ar.app_id=a.app_id AND ar.id=a.role_id WHERE a.app_id=$1 ORDER BY a.last_login_at DESC LIMIT 200`, r.PathValue("id"))
 }
 func (s *Server) validRedirect(v string) bool {
 	u, e := url.Parse(v)
@@ -178,6 +187,26 @@ func (s *Server) saveApp(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "检查应用名称和回调地址（最多 10 个）")
 		return
 	}
+	if a.LoginMethods == nil {
+		a.LoginMethods = allLoginMethods()
+		if id := r.PathValue("id"); id != "" {
+			if err := s.db.QueryRow(r.Context(), "SELECT login_methods FROM apps WHERE id=$1", id).Scan(&a.LoginMethods); err != nil {
+				fail(w, 400, "项目不存在")
+				return
+			}
+		}
+	}
+	for _, method := range a.LoginMethods {
+		if !slices.Contains(allLoginMethods(), method) {
+			fail(w, 400, "不支持的登录方式")
+			return
+		}
+	}
+	a.Logo = strings.TrimSpace(a.Logo)
+	if !s.validProjectLogo(a.Logo) {
+		fail(w, 400, "请先上传项目 Logo，再保存项目")
+		return
+	}
 	if a.BackchannelLogoutURI != "" && !s.validLogoutEndpoint(a.BackchannelLogoutURI) {
 		fail(w, 400, "后台退出通知地址须为无查询参数的 HTTPS URL")
 		return
@@ -188,9 +217,22 @@ func (s *Server) saveApp(w http.ResponseWriter, r *http.Request) {
 			a.Platform = "spa"
 		}
 	}
-	if !slices.Contains([]string{"web", "spa", "native"}, a.Platform) || (a.Platform != "web" && !a.Public) {
-		fail(w, 400, "SPA 和原生应用必须使用公共客户端")
+	if !slices.Contains([]string{"web", "spa", "native", "extension"}, a.Platform) || (a.Platform != "web" && !a.Public) {
+		fail(w, 400, "SPA、原生应用和浏览器扩展必须使用公共客户端")
 		return
+	}
+	if len(a.AllowedOrigins) > 20 {
+		fail(w, 400, "最多填写 20 个请求来源")
+		return
+	}
+	for _, origin := range a.AllowedOrigins {
+		if !s.validOrigin(origin) {
+			fail(w, 400, "请求来源须为精确 origin，不含路径、通配符或查询参数")
+			return
+		}
+	}
+	if a.AllowedOrigins == nil {
+		a.AllowedOrigins = []string{}
 	}
 	for _, v := range a.Redirects {
 		if !s.validAppRedirect(v, a.Platform) {
@@ -211,12 +253,16 @@ func (s *Server) saveApp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var e error
 	if id == "" {
+		if management, ok := r.Context().Value(managementContextKey{}).(*managementAuth); ok {
+			s.createManagedProject(w, r, management, a)
+			return
+		}
 		id = "app_" + randomID()[:20]
 		if !a.Public {
 			secret = randomID()
 			a.Secret = s.mac(secret)
 		}
-		_, e = s.db.Exec(r.Context(), "INSERT INTO apps(id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,refresh_enabled,platform,backchannel_logout_uri) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)", id, a.Name, a.Description, a.Secret, a.Redirects, a.LogoutRedirects, a.Public, a.Enabled, a.Restricted, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI)
+		_, e = s.db.Exec(r.Context(), "INSERT INTO apps(id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)", id, a.Name, a.Description, a.Secret, a.Redirects, a.LogoutRedirects, a.Public, a.Enabled, a.Restricted, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI, a.Logo, a.AllowedOrigins, a.LoginMethods)
 	} else {
 		var wasPublic bool
 		e = s.db.QueryRow(r.Context(), "SELECT public FROM apps WHERE id=$1", id).Scan(&wasPublic)
@@ -224,7 +270,16 @@ func (s *Server) saveApp(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "客户端类型不可修改，请创建新应用")
 			return
 		}
-		_, e = s.db.Exec(r.Context(), "UPDATE apps SET name=$1,description=$2,redirects=$3,logout_redirects=$4,enabled=$5,restricted=$6,refresh_enabled=$8,platform=$9,backchannel_logout_uri=$10 WHERE id=$7", a.Name, a.Description, a.Redirects, a.LogoutRedirects, a.Enabled, a.Restricted, id, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI)
+		var expected any
+		if management, ok := r.Context().Value(managementContextKey{}).(*managementAuth); ok {
+			expected = management.Revision
+		}
+		tag, err := s.db.Exec(r.Context(), "UPDATE apps SET name=$1,description=$2,redirects=$3,logout_redirects=$4,enabled=$5,restricted=$6,refresh_enabled=$8,platform=$9,backchannel_logout_uri=$10,logo=$11,allowed_origins=$12,login_methods=$13,management_revision=management_revision+1 WHERE id=$7 AND ($14::bigint IS NULL OR management_revision=$14)", a.Name, a.Description, a.Redirects, a.LogoutRedirects, a.Enabled, a.Restricted, id, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI, a.Logo, a.AllowedOrigins, a.LoginMethods, expected)
+		e = err
+		if e == nil && tag.RowsAffected() != 1 {
+			fail(w, 412, "项目已被修改，请重新 GET 项目再提交 If-Match")
+			return
+		}
 	}
 	if e != nil {
 		fail(w, 500, "应用保存失败")

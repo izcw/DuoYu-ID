@@ -45,10 +45,10 @@ func env(k, d string) string {
 func main() {
 	port := env("CLIENT_PORT", "8091")
 	origin := "http://localhost:" + port
-	issuer := env("DUOYU_ISSUER", "http://localhost:8080")
+	issuer := env("DUOYU_ISSUER", "http://localhost:5252")
 	clientID := os.Getenv("CLIENT_ID")
 	if clientID == "" {
-		log.Fatal("Register a public client in Duoyu ID, then set CLIENT_ID")
+		log.Fatal("Register a public client in DuoYu ID, then set CLIENT_ID")
 	}
 	ctx := context.Background()
 	provider, e := oidc.NewProvider(ctx, issuer)

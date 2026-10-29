@@ -14,7 +14,7 @@ try {
   $lines = @(Get-Content -LiteralPath $EnvFile | Where-Object { $_ -notmatch '^SMTP_(HOST|PORT|USER|FROM|PASSWORD|PLAIN_LOCAL)=' })
   foreach ($key in ($values.Keys | Sort-Object)) { $lines += "$key=$($values[$key])" }
   [IO.File]::WriteAllLines((Resolve-Path -LiteralPath $EnvFile).Path, $lines, [Text.UTF8Encoding]::new($false))
-  Write-Host 'QQ SMTP configuration saved locally. Restart Duoyu ID, then request a login code. No email was sent by this script.'
+  Write-Host 'QQ SMTP configuration saved locally. Restart DuoYu ID, then request a login code. No email was sent by this script.'
 } finally {
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
   $plain = $null; $values = $null; $lines = $null

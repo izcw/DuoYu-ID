@@ -44,6 +44,7 @@ type Server struct {
 	mailTransport func(MailMessage) error // Replaced only by isolated tests; production uses SMTP.
 }
 type User struct {
+	AccountID      string    `json:"account_id"`
 	ManagementRole string    `json:"management_role"`
 	ID             string    `json:"id"`
 	Email          string    `json:"email"`
@@ -76,7 +77,7 @@ func main() {
 		return
 	}
 	h := s.routes()
-	srv := &http.Server{Addr: env("DUOYU_ADDR", "127.0.0.1:8080"), Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}
+	srv := &http.Server{Addr: env("DUOYU_ADDR", "0.0.0.0:5252"), Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var workers sync.WaitGroup
@@ -101,27 +102,33 @@ func main() {
 		defer cancel()
 		srv.Shutdown(c)
 	}()
-	slog.Info("Duoyu ID ready", "origin", s.origin)
-	if e = srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		slog.Error("listen failed", "address", srv.Addr, "error", err)
+		return
+	}
+	s.logAccessAddresses(srv.Addr)
+	slog.Info("DuoYu ID ready", "origin", s.origin)
+	if e = srv.Serve(listener); e != nil && !errors.Is(e, http.ErrServerClosed) {
 		slog.Error("server stopped", "error", e)
 	}
 }
 func newServer() (*Server, error) {
-	s := &Server{origin: strings.TrimRight(env("DUOYU_ORIGIN", "http://localhost:8080"), "/"), data: env("DUOYU_DATA_DIR", "data"), dev: os.Getenv("DUOYU_DEV") == "true"}
+	s := &Server{origin: strings.TrimRight(env("DUOYU_ORIGIN", "http://localhost:5252"), "/"), data: env("DUOYU_DATA_DIR", "data"), dev: os.Getenv("DUOYU_DEV") == "true"}
 	var e error
 	s.proxies, e = parseProxies(os.Getenv("DUOYU_TRUSTED_PROXIES"))
 	if e != nil {
 		return nil, e
 	}
 	u, e := url.Parse(s.origin)
-	if e != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+	if e != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, errors.New("DUOYU_ORIGIN must be an origin")
 	}
 	if !s.dev && u.Scheme != "https" {
 		return nil, errors.New("HTTPS required")
 	}
-	if s.dev && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
-		return nil, errors.New("development mode is localhost only")
+	if s.dev && !localDevelopmentHost(u.Hostname()) {
+		return nil, errors.New("development mode requires localhost or a local network interface IP")
 	}
 	key, e := hex.DecodeString(os.Getenv("DUOYU_SECRET"))
 	if e != nil || len(key) != 32 {
@@ -130,7 +137,12 @@ func newServer() (*Server, error) {
 	copy(s.key[:], key)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	s.db, e = pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	poolConfig, e := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	if e != nil {
+		return nil, e
+	}
+	poolConfig.ConnConfig.Tracer = protocolDBTracer{}
+	s.db, e = pgxpool.NewWithConfig(ctx, poolConfig)
 	if e != nil {
 		return nil, e
 	}
@@ -149,10 +161,14 @@ func newServer() (*Server, error) {
 	if e = s.loadSigningKey(); e != nil {
 		return nil, e
 	}
-	s.templates = template.Must(template.ParseFS(assets, "templates/*.html"))
-	s.wa, e = webauthn.New(&webauthn.Config{RPDisplayName: "多鱼账号", RPID: u.Hostname(), RPOrigins: []string{s.origin}})
-	if e != nil {
-		return nil, e
+	s.templates = template.Must(template.New("").Funcs(template.FuncMap{"assetURL": authAssetURL}).ParseFS(assets, "templates/*.html"))
+	// WebAuthn requires a domain RP ID. A development LAN-IP issuer can
+	// still serve OIDC, password, email and TOTP without a WebAuthn provider.
+	if net.ParseIP(u.Hostname()) == nil {
+		s.wa, e = webauthn.New(&webauthn.Config{RPDisplayName: "多鱼账号", RPID: u.Hostname(), RPOrigins: []string{s.origin}})
+		if e != nil {
+			return nil, e
+		}
 	}
 	opts := []op.Option{}
 	if s.dev {
@@ -170,7 +186,7 @@ func newServer() (*Server, error) {
 		if email == "" {
 			return nil, errors.New("valid admin email required")
 		}
-		_, e = s.db.Exec(ctx, "INSERT INTO users(id,email,name,password_hash,admin) VALUES($1,$2,'管理员',$3,true) ON CONFLICT(email) DO NOTHING", randomID(), email, hashPassword(p))
+		_, e = s.db.Exec(ctx, "INSERT INTO users(id,email,name,password_hash,admin) SELECT $1,$2,'超级管理员',$3,true WHERE NOT EXISTS(SELECT 1 FROM users WHERE admin) ON CONFLICT DO NOTHING", randomID(), email, hashPassword(p))
 		if e != nil {
 			return nil, e
 		}
@@ -195,6 +211,11 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /api/service/mail", s.serviceMail)
 	m.HandleFunc("GET /api/service/mail/{id}", s.serviceMailStatus)
 	m.HandleFunc("GET /api/admin/mail", s.adminMail)
+	m.HandleFunc("GET /api/me/authenticator", s.authenticatorStatus)
+	m.HandleFunc("POST /api/me/authenticator/begin", s.beginAuthenticator)
+	m.HandleFunc("POST /api/me/authenticator/finish", s.finishAuthenticator)
+	m.HandleFunc("DELETE /api/me/authenticator", s.deleteAuthenticator)
+	m.HandleFunc("POST /api/auth/authenticator", s.loginAuthenticator)
 	m.HandleFunc("GET /api/me", s.me)
 	m.HandleFunc("GET /api/user/info", s.artUser)
 	m.HandleFunc("PATCH /api/me", s.profile)
@@ -202,6 +223,8 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /api/me/email", s.changeEmail)
 	m.HandleFunc("POST /api/me/avatar", s.avatar)
 	m.HandleFunc("GET /avatars/{id}", s.serveAvatar)
+	m.HandleFunc("POST /api/admin/project-logos", s.uploadProjectLogo)
+	m.HandleFunc("GET /project-logos/{id}", s.serveProjectLogo)
 	m.HandleFunc("GET /api/me/sessions", s.sessions)
 	m.HandleFunc("DELETE /api/me/sessions/{id}", s.revokeSession)
 	m.HandleFunc("GET /api/auth/context", s.authContext)
@@ -224,6 +247,8 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /api/admin/users/{id}/access", s.managementAccess)
 	m.HandleFunc("POST /api/admin/users/{id}/revoke", s.adminRevoke)
 	m.HandleFunc("GET /api/admin/apps", s.apps)
+	m.HandleFunc("GET /api/admin/apps/{id}/blacklist", s.blacklist)
+	m.HandleFunc("PUT /api/admin/apps/{id}/blacklist", s.setBlacklist)
 	m.HandleFunc("POST /api/admin/apps", s.saveApp)
 	m.HandleFunc("PUT /api/admin/apps/{id}", s.saveApp)
 	m.HandleFunc("POST /api/admin/apps/{id}/rotate", s.rotateApp)
@@ -239,6 +264,11 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /api/admin/users/{id}", s.adminUserDetail)
 	m.HandleFunc("GET /api/admin/keys/{id}", s.adminKeyDetail)
 	m.HandleFunc("PUT /api/admin/keys/{id}", s.updateKey)
+	m.HandleFunc("GET /api/admin/apps/{id}/roles", s.listAppRoles)
+	m.HandleFunc("POST /api/admin/apps/{id}/roles", s.saveAppRole)
+	m.HandleFunc("PUT /api/admin/apps/{id}/roles/{role}", s.saveAppRole)
+	m.HandleFunc("DELETE /api/admin/apps/{id}/roles/{role}", s.deleteAppRole)
+	m.HandleFunc("PUT /api/admin/apps/{id}/users/{user}/role", s.setAppUserRole)
 	m.HandleFunc("GET /api/admin/apps/{id}/users", s.appUsers)
 	m.HandleFunc("PUT /api/admin/settings", s.saveSettings)
 	m.HandleFunc("GET /api/admin/mail-preview", s.mailPreview)
@@ -247,6 +277,8 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /api/me/passkeys/begin", s.beginPasskey)
 	m.HandleFunc("POST /api/me/passkeys/finish", s.finishPasskey)
 	m.HandleFunc("DELETE /api/me/passkeys/{id}", s.deletePasskey)
+	m.HandleFunc("POST /api/auth/qr/device/begin", s.beginPasskeyLogin)
+	m.HandleFunc("POST /api/auth/qr/device/finish", s.finishPasskeyLogin)
 	m.HandleFunc("POST /api/auth/passkey/begin", s.beginPasskeyLogin)
 	m.HandleFunc("POST /api/auth/passkey/finish", s.finishPasskeyLogin)
 	m.HandleFunc("POST /api/auth/qr", s.createQR)
@@ -255,12 +287,13 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("POST /api/auth/qr/context", s.qrContext)
 	m.HandleFunc("POST /api/auth/qr/approve", s.approveQR)
 	m.HandleFunc("GET /scan", s.scanPage)
+	s.registerManagementRoutes(m)
 	m.HandleFunc("GET /api/openapi.json", s.openapi)
-	m.Handle("/oidc/", s.provider)
-	m.Handle("/.well-known/", s.provider)
+	m.Handle("/oidc/", s.protocolHandler())
+	m.Handle("/.well-known/", s.protocolHandler())
 	// OIDC endpoints are discovered by clients; do not guess paths in client code.
 	for _, p := range []string{"/authorize", "/authorize/", "/oauth/", "/userinfo", "/keys", "/end_session", "/revoke", "/introspect"} {
-		m.Handle(p, s.provider)
+		m.Handle(p, s.protocolHandler())
 	}
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -270,6 +303,10 @@ func (s *Server) routes() http.Handler {
 		if r.Method != "GET" && r.Method != "HEAD" {
 			http.NotFound(w, r)
 			return
+		}
+		// Authentication assets use fixed paths; revalidate them after frontend updates.
+		if strings.HasPrefix(r.URL.Path, "/auth/") || strings.HasPrefix(r.URL.Path, "/login-ui/") {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		http.FileServer(http.Dir("admin/dist")).ServeHTTP(w, r)
 	})
@@ -291,9 +328,9 @@ func (s *Server) routes() http.Handler {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		// Server-to-server sending authenticates exclusively with a scoped Bearer key.
-		serviceMail := r.Method == "POST" && r.URL.Path == "/api/service/mail"
+		serviceMail := (r.Method == "POST" && r.URL.Path == "/api/service/mail") || strings.HasPrefix(r.URL.Path, "/api/management/")
 		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != "GET" && r.Method != "HEAD" && !serviceMail {
-			if r.Header.Get("Origin") != s.origin || r.Header.Get("X-Duoyu-Request") != "1" {
+			if !s.allowedBrowserOrigin(r) || r.Header.Get("X-Duoyu-Request") != "1" {
 				fail(w, 403, "请求来源不受信任")
 				return
 			}
@@ -346,13 +383,16 @@ func remoteIP(r *http.Request) string {
 	return h
 }
 func (s *Server) user(ctx context.Context, id string) (u User, e error) {
-	e = s.db.QueryRow(ctx, "SELECT id,email,name,avatar,admin,enabled,created_at,management_role FROM users WHERE id=$1", id).Scan(&u.ID, &u.Email, &u.Name, &u.Avatar, &u.Admin, &u.Enabled, &u.Created, &u.ManagementRole)
+	e = s.db.QueryRow(ctx, "SELECT id,email,name,avatar,admin,enabled,created_at,management_role,account_id FROM users WHERE id=$1", id).Scan(&u.ID, &u.Email, &u.Name, &u.Avatar, &u.Admin, &u.Enabled, &u.Created, &u.ManagementRole, &u.AccountID)
 	if e == nil && !u.Enabled {
 		e = errDisabledUser
 	}
 	return
 }
 func (s *Server) current(r *http.Request) (u User, e error) {
+	if management, ok := r.Context().Value(managementContextKey{}).(*managementAuth); ok {
+		return management.Owner, nil
+	}
 	c, e := r.Cookie("duoyu_session")
 	if e != nil {
 		return u, e
@@ -383,19 +423,31 @@ func (s *Server) require(w http.ResponseWriter, r *http.Request, admin bool) (Us
 func (s *Server) cookie(w http.ResponseWriter, name, val string, age int) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: val, Path: "/", HttpOnly: true, Secure: !s.dev, SameSite: http.SameSiteLaxMode, MaxAge: age})
 }
-func (s *Server) newSession(w http.ResponseWriter, r *http.Request, id, amr string) error {
+func (s *Server) newSession(w http.ResponseWriter, r *http.Request, id, amr string, credentialIDs ...string) error {
+	credentialID := ""
+	if len(credentialIDs) > 0 {
+		credentialID = credentialIDs[0]
+	}
 	v := randomID()
 	tx, e := s.db.Begin(r.Context())
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback(r.Context())
+	// Serialize authenticator session creation with unbinding and account disable.
+	if strings.Contains(" "+amr+" ", " totp ") {
+		var current string
+		if err := tx.QueryRow(r.Context(), "SELECT u.id FROM users u JOIN authenticators a ON a.user_id=u.id WHERE u.id=$1 AND u.enabled AND a.active FOR SHARE OF u,a", id).Scan(&current); err != nil {
+			return err
+		}
+	}
+
 	if c, e := r.Cookie("duoyu_session"); e == nil {
 		if _, err := tx.Exec(r.Context(), "DELETE FROM sessions WHERE hash=$1", digest(c.Value)); err != nil {
 			return err
 		}
 	}
-	_, e = tx.Exec(r.Context(), "INSERT INTO sessions(hash,user_id,expires_at,agent,amr) VALUES($1,$2,$3,$4,$5)", digest(v), id, time.Now().Add(12*time.Hour), truncate(r.UserAgent(), 300), amr)
+	_, e = tx.Exec(r.Context(), "INSERT INTO sessions(hash,user_id,expires_at,agent,amr,passkey_id) VALUES($1,$2,$3,$4,$5,$6)", digest(v), id, time.Now().Add(12*time.Hour), truncate(r.UserAgent(), 300), amr, credentialID)
 	if e == nil {
 		e = tx.Commit(r.Context())
 	}

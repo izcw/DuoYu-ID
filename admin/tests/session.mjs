@@ -12,9 +12,9 @@ try {
   page.on('pageerror', error => errors.push(error.message))
   page.on('request', request => { if (new URL(request.url()).pathname === '/api/me') protectedRequests.push(request.url()) })
   for (const staleCookie of [false, true]) {
-    if (staleCookie) await context.addCookies([{ name: 'duoyu_session', value: 'invalid-session-regression', url: 'http://localhost:8080', httpOnly: true }])
+    if (staleCookie) await context.addCookies([{ name: 'duoyu_session', value: 'invalid-session-regression', url: 'http://localhost:5252', httpOnly: true }])
     const probe = page.waitForResponse(r => r.url().endsWith('/api/auth/session'))
-    await page.goto('http://localhost:8080/login')
+    await page.goto('http://localhost:5252/login')
     const response = await probe
     assert.equal(response.status(), 200)
     assert.equal(response.headers()['cache-control'], 'no-store')

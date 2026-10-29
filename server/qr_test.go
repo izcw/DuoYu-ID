@@ -72,6 +72,21 @@ func testQRLogin(t *testing.T, s *Server, origin string) {
 	}
 	s.db.Exec(ctx, "UPDATE sessions SET amr='hwk user' WHERE hash=$1", digest(token))
 	status, out = call(phone, "/api/auth/qr/approve", map[string]any{"ticket": ticket})
+	if status != 403 {
+		t.Fatal("unenrolled passkey session approved QR")
+	}
+	_, e = s.db.Exec(ctx, "INSERT INTO passkeys(id,user_id,name,credential,qr_enabled) VALUES('qr-test-key',$1,'phone','{}',false)", uid)
+	if e != nil {
+		t.Fatal(e)
+	}
+	s.db.Exec(ctx, "UPDATE sessions SET passkey_id='qr-test-key' WHERE hash=$1", digest(token))
+	status, _ = call(phone, "/api/auth/qr/approve", map[string]any{"ticket": ticket})
+	if status != 403 {
+		t.Fatal("ordinary passkey approved QR")
+	}
+	s.db.Exec(ctx, "UPDATE passkeys SET qr_enabled=true WHERE id='qr-test-key'")
+	defer s.db.Exec(ctx, "DELETE FROM passkeys WHERE id='qr-test-key'")
+	status, out = call(phone, "/api/auth/qr/approve", map[string]any{"ticket": ticket})
 	if status != 200 {
 		t.Fatal(out)
 	}
@@ -80,6 +95,13 @@ func testQRLogin(t *testing.T, s *Server, origin string) {
 		t.Fatal("approval replay accepted")
 	}
 	var wins atomic.Int32
+	// Re-check enrollment when the computer claims an already approved QR.
+	s.db.Exec(ctx, "UPDATE passkeys SET qr_enabled=false WHERE id='qr-test-key'")
+	status, _ = call(desktop, "/api/auth/qr/"+id+"/poll", map[string]any{})
+	if status != 403 {
+		t.Fatal("revoked enrollment still issued a desktop session")
+	}
+	s.db.Exec(ctx, "UPDATE passkeys SET qr_enabled=true WHERE id='qr-test-key'")
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)

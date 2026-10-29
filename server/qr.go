@@ -9,6 +9,9 @@ import (
 )
 
 func (s *Server) createQR(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectMethod(w, r, "", "qr") {
+		return
+	}
 	if s.limited(r, "qr-create:"+remoteIP(r), 30, 15*time.Minute) {
 		fail(w, 429, "操作频繁，请稍后再试")
 		return
@@ -50,6 +53,9 @@ func (s *Server) cancelQR(w http.ResponseWriter, r *http.Request) {
 	ok(w, nil)
 }
 func (s *Server) pollQR(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectMethod(w, r, "", "qr") {
+		return
+	}
 	c, e := r.Cookie("duoyu_qr")
 	if e != nil {
 		fail(w, 403, "请求不属于此浏览器")
@@ -74,7 +80,7 @@ func (s *Server) pollQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var enabled bool
-	e = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id WHERE u.id=$1 AND u.enabled AND s.hash=$2 AND s.expires_at>now())", uid, approver).Scan(&enabled)
+	e = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id JOIN passkeys p ON p.id=s.passkey_id AND p.user_id=u.id AND p.qr_enabled WHERE u.id=$1 AND u.enabled AND s.hash=$2 AND s.expires_at>now())", uid, approver).Scan(&enabled)
 	if e != nil || !enabled {
 		fail(w, 403, "确认已失效，请重新扫码")
 		return
@@ -132,9 +138,9 @@ func (s *Server) approveQR(w http.ResponseWriter, r *http.Request) {
 		status = "rejected"
 	}
 	// A password login or an old browser session cannot approve a QR login.
-	tag, e := s.db.Exec(r.Context(), `UPDATE qr_logins q SET status=$1,user_id=$2,approver_session=$3 WHERE ticket_hash=$4 AND status IN ('pending','scanned') AND expires_at>now() AND EXISTS(SELECT 1 FROM sessions s WHERE s.hash=$3 AND s.user_id=$2 AND s.amr='hwk user' AND s.created_at>=q.created_at AND s.expires_at>now())`, status, u.ID, digest(c.Value), digest(in.Ticket))
+	tag, e := s.db.Exec(r.Context(), `UPDATE qr_logins q SET status=$1,user_id=$2,approver_session=$3 WHERE ticket_hash=$4 AND status IN ('pending','scanned') AND expires_at>now() AND EXISTS(SELECT 1 FROM sessions s JOIN passkeys p ON p.id=s.passkey_id AND p.user_id=s.user_id AND p.qr_enabled WHERE s.hash=$3 AND s.user_id=$2 AND s.amr='hwk user' AND s.created_at>=q.created_at AND s.expires_at>now())`, status, u.ID, digest(c.Value), digest(in.Ticket))
 	if e != nil || tag.RowsAffected() != 1 {
-		fail(w, 403, "请重新扫码并使用通行密钥验证，或二维码已失效")
+		fail(w, 403, "请先在账号与安全中添加 iPhone 扫码登录，再使用对应密钥验证；二维码过期时请重新扫码")
 		return
 	}
 	s.audit(r.Context(), u.ID, "qr."+status, "", true)

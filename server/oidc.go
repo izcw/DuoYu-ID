@@ -23,6 +23,10 @@ import (
 )
 
 type App struct {
+	Revision             int64     `json:"revision"`
+	LoginMethods         []string  `json:"login_methods"`
+	AllowedOrigins       []string  `json:"allowed_origins"`
+	Logo                 string    `json:"logo"`
 	ID                   string    `json:"id"`
 	Name                 string    `json:"name"`
 	Description          string    `json:"description"`
@@ -110,7 +114,10 @@ func (a *AuthRequest) GetSubject() string                 { return a.UserID }
 func (a *AuthRequest) Done() bool                         { return a.Completed }
 func (s *Server) app(ctx context.Context, id string) (a *App, e error) {
 	a = &App{Development: s.dev}
-	e = s.db.QueryRow(ctx, "SELECT id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,created_at,refresh_enabled,platform,backchannel_logout_uri FROM apps WHERE id=$1", id).Scan(&a.ID, &a.Name, &a.Description, &a.Secret, &a.Redirects, &a.LogoutRedirects, &a.Public, &a.Enabled, &a.Restricted, &a.Created, &a.RefreshEnabled, &a.Platform, &a.BackchannelLogoutURI)
+	e = s.db.QueryRow(ctx, "SELECT id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,created_at,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods,management_revision FROM apps WHERE id=$1", id).Scan(&a.ID, &a.Name, &a.Description, &a.Secret, &a.Redirects, &a.LogoutRedirects, &a.Public, &a.Enabled, &a.Restricted, &a.Created, &a.RefreshEnabled, &a.Platform, &a.BackchannelLogoutURI, &a.Logo, &a.AllowedOrigins, &a.LoginMethods, &a.Revision)
+	if !projectLogoPath.MatchString(a.Logo) {
+		a.Logo = ""
+	}
 	if e == nil && !a.Enabled {
 		e = errors.New("application disabled")
 	}
@@ -133,6 +140,9 @@ func (s *Server) allowed(ctx context.Context, uid, aid string) bool {
 	}
 	a, e := s.app(ctx, aid)
 	if e != nil {
+		return false
+	}
+	if blocked, err := s.projectBlocked(ctx, u.Email, aid); err != nil || blocked {
 		return false
 	}
 	if !a.Restricted {
@@ -161,7 +171,7 @@ func (s *Server) CreateAuthRequest(ctx context.Context, r *oidc.AuthRequest, _ s
 	if slices.Contains(r.Prompt, "none") {
 		hash, _ := ctx.Value(sessionContextKey{}).(string)
 		e := s.db.QueryRow(ctx, "SELECT user_id,created_at,amr FROM sessions WHERE hash=$1 AND expires_at>now()", hash).Scan(&a.UserID, &a.Authenticated, &a.AMR)
-		if e != nil || needsReauthentication(a, a.Authenticated) {
+		if e != nil || needsReauthentication(a, a.Authenticated) || !s.loginAMRAllowed(ctx, r.ClientID, a.AMR) {
 			return nil, oidc.ErrLoginRequired()
 		}
 		if !s.allowed(ctx, a.UserID, r.ClientID) {
@@ -201,7 +211,7 @@ func (s *Server) AuthRequestByCode(ctx context.Context, code string) (op.AuthReq
 	}
 	a := new(AuthRequest)
 	e = json.Unmarshal(b, a)
-	if e == nil && !s.allowed(ctx, a.UserID, a.Request.ClientID) {
+	if e == nil && (!s.allowed(ctx, a.UserID, a.Request.ClientID) || !s.loginAMRAllowed(ctx, a.Request.ClientID, a.AMR)) {
 		e = errors.New("access denied")
 	}
 	return a, e
@@ -218,6 +228,9 @@ func (s *Server) DeleteAuthRequest(ctx context.Context, id string) error {
 	return e
 }
 func (s *Server) CreateAccessToken(ctx context.Context, r op.TokenRequest) (string, time.Time, error) {
+	if a, ok := r.(*AuthRequest); ok && !s.loginAMRAllowed(ctx, a.GetClientID(), a.AMR) {
+		return "", time.Time{}, errors.New("login method disabled")
+	}
 	id := randomID()
 	expiry := time.Now().Add(5 * time.Minute)
 	aud := r.GetAudience()
@@ -276,6 +289,9 @@ func (s *Server) fillInfo(ctx context.Context, info *oidc.UserInfo, uid string, 
 		case "profile":
 			info.Name = u.Name
 			info.Picture = u.Avatar
+			if strings.HasPrefix(u.Avatar, "/avatars/") {
+				info.Picture = s.origin + u.Avatar
+			}
 		case "email":
 			info.Email = u.Email
 			info.EmailVerified = oidc.Bool(true)
@@ -297,18 +313,22 @@ func (s *Server) SetUserinfoFromRequest(ctx context.Context, info *oidc.UserInfo
 	if hash != "" {
 		info.AppendClaims("sid", digest("logout:"+hash))
 	}
+	if aud := r.GetAudience(); len(aud) == 1 {
+		return s.fillProjectRole(ctx, info, r.GetSubject(), aud[0], r.GetScopes())
+	}
 	return nil
 }
 func (s *Server) token(ctx context.Context, id, subject string) (string, []string, time.Time, error) {
 	var app string
 	var scopes []string
+	var amr string
 	var expires time.Time
-	e := s.db.QueryRow(ctx, "SELECT app_id,scopes,expires_at FROM access_tokens WHERE id=$1 AND user_id=$2 AND expires_at>now() AND (session_hash IS NULL OR EXISTS(SELECT 1 FROM sessions WHERE hash=session_hash AND expires_at>now()))", id, subject).Scan(&app, &scopes, &expires)
+	e := s.db.QueryRow(ctx, "SELECT app_id,scopes,expires_at,COALESCE((SELECT amr FROM sessions WHERE hash=session_hash),'') FROM access_tokens WHERE id=$1 AND user_id=$2 AND expires_at>now() AND (session_hash IS NULL OR EXISTS(SELECT 1 FROM sessions WHERE hash=session_hash AND expires_at>now()))", id, subject).Scan(&app, &scopes, &expires, &amr)
 	var revoked bool
 	if e == nil {
 		e = s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM refresh_families f JOIN access_tokens t ON t.family_id=f.id WHERE t.id=$1 AND f.revoked)", id).Scan(&revoked)
 	}
-	if e == nil && (revoked || !s.allowed(ctx, subject, app)) {
+	if e == nil && (revoked || !s.allowed(ctx, subject, app) || !s.loginAMRAllowed(ctx, app, amr)) {
 		e = errors.New("access denied")
 	}
 	return app, scopes, expires, e
@@ -323,18 +343,23 @@ func (s *Server) SetUserinfoFromToken(ctx context.Context, info *oidc.UserInfo, 
 		if e != nil {
 			return e
 		}
-		allowed := false
-		for _, raw := range a.Redirects {
-			u, _ := url.Parse(raw)
-			if u.Scheme+"://"+u.Host == origin {
-				allowed = true
+		if !slices.Contains(a.AllowedOrigins, origin) {
+			if state, ok := ctx.Value(protocolStateKey{}).(*protocolState); ok {
+				state.originDenied = true
 			}
-		}
-		if !allowed {
 			return errors.New("origin denied")
 		}
 	}
-	return s.fillInfo(ctx, info, subject, scopes)
+	if !slices.Contains(scopes, "openid") {
+		if state, ok := ctx.Value(protocolStateKey{}).(*protocolState); ok {
+			state.insufficientScope = true
+		}
+		return errors.New("openid scope required")
+	}
+	if err := s.fillInfo(ctx, info, subject, scopes); err != nil {
+		return err
+	}
+	return s.fillProjectRole(ctx, info, subject, app, scopes)
 }
 func (s *Server) SetIntrospectionFromToken(ctx context.Context, info *oidc.IntrospectionResponse, id, subject, client string) error {
 	app, scopes, expires, e := s.token(ctx, id, subject)
@@ -437,6 +462,8 @@ func (s *Server) loadSigningKey() error {
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("authRequestID")
 	app := "多鱼账号中心"
+	logo := ""
+	methods := allLoginMethods()
 	if id != "" {
 		a, e := s.AuthRequestByID(r.Context(), id)
 		if e != nil {
@@ -449,6 +476,8 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		app = c.Name
+		logo = c.Logo
+		methods = c.LoginMethods
 		if a.Done() && slices.Contains(a.(*AuthRequest).Request.Prompt, "none") {
 			hash, _ := r.Context().Value(sessionContextKey{}).(string)
 			if hash == "" || hash != a.(*AuthRequest).SessionHash {
@@ -473,7 +502,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		s.cookie(w, name, s.mac(id), 600)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	s.templates.ExecuteTemplate(w, "login.html", map[string]string{"App": app, "RequestID": id})
+	s.templates.ExecuteTemplate(w, "login.html", map[string]any{"App": app, "Logo": logo, "RequestID": id, "LoginMethods": methods, "Origin": s.origin})
 }
 func (s *Server) authContext(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
@@ -488,10 +517,11 @@ func (s *Server) authContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var created time.Time
+	var amr string
 	if cookie, err := r.Cookie("duoyu_session"); err == nil {
-		s.db.QueryRow(r.Context(), "SELECT created_at FROM sessions WHERE hash=$1 AND expires_at>now()", digest(cookie.Value)).Scan(&created)
+		s.db.QueryRow(r.Context(), "SELECT created_at,amr FROM sessions WHERE hash=$1 AND expires_at>now()", digest(cookie.Value)).Scan(&created, &amr)
 	}
-	ok(w, map[string]any{"name": c.Name, "scopes": a.GetScopes(), "reauthenticate": needsReauthentication(a.(*AuthRequest), created), "consent": slices.Contains(a.(*AuthRequest).Request.Prompt, "consent") || slices.Contains(a.GetScopes(), "offline_access")})
+	ok(w, map[string]any{"name": c.Name, "logo": c.Logo, "scopes": a.GetScopes(), "login_methods": c.LoginMethods, "reauthenticate": needsReauthentication(a.(*AuthRequest), created) || !s.loginAMRAllowed(r.Context(), c.ID, amr), "consent": slices.Contains(a.(*AuthRequest).Request.Prompt, "consent") || slices.Contains(a.GetScopes(), "offline_access")})
 }
 
 func flowCookieName(id string) string { return "duoyu_flow_" + digest(id)[:24] }
@@ -546,6 +576,10 @@ func (s *Server) completeAuth(w http.ResponseWriter, r *http.Request) {
 	e = s.db.QueryRow(r.Context(), "SELECT created_at,amr FROM sessions WHERE hash=$1", digest(cookie.Value)).Scan(&created, &amr)
 	if e != nil {
 		fail(w, 401, "会话已失效")
+		return
+	}
+	if !s.loginAMRAllowed(r.Context(), a.GetClientID(), amr) {
+		fail(w, 403, "当前登录方式未在该项目启用，请使用其他方式重新登录")
 		return
 	}
 	if needsReauthentication(a, created) {

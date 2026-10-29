@@ -1,1 +1,3 @@
 :root{color-scheme:light;--auth-control-height:42px;--auth-foreground:#111111;--auth-muted:#727782;--auth-radius:5px;--auth-background:#ffffff}
+
+input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=hidden]),textarea{font-size:14px;border:1px solid #ededee;color:#000000}

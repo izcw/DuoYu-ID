@@ -8,10 +8,35 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
+
+// Rejection sampling guarantees all three character classes without fixed positions.
+func randomRegistrationPassword() (string, error) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	for {
+		password := make([]byte, 32)
+		upper, lower, digit := false, false, false
+		for i := range password {
+			n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+			if err != nil {
+				return "", err
+			}
+			c := alphabet[n.Int64()]
+			password[i] = c
+			upper = upper || c >= 'A' && c <= 'Z'
+			lower = lower || c >= 'a' && c <= 'z'
+			digit = digit || c >= '0' && c <= '9'
+		}
+		if upper && lower && digit {
+			return string(password), nil
+		}
+	}
+}
 
 func randomID() string {
 	b := make([]byte, 32)
@@ -58,8 +83,8 @@ func checkPassword(v, h string) bool {
 var dummyPasswordHash = hashPassword(randomID())
 
 func validPassword(v string) error {
-	if len(v) < 12 || len(v) > 128 {
-		return fmt.Errorf("密码须为 12–128 字节")
+	if !utf8.ValidString(v) || utf8.RuneCountInString(v) < 6 || utf8.RuneCountInString(v) > 64 {
+		return fmt.Errorf("密码须为 6–64 个字符")
 	}
 	return nil
 }

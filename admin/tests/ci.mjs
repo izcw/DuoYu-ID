@@ -10,7 +10,7 @@ assert.equal(fs.existsSync('../.env.local'), false)
 assert.ok(process.env.DUOYU_TEST_DATABASE_URL)
 const config = {
   DATABASE_URL: process.env.DUOYU_TEST_DATABASE_URL,
-  DUOYU_ORIGIN: 'http://localhost:8080', DUOYU_ADDR: '127.0.0.1:8080',
+  DUOYU_ORIGIN: 'http://localhost:5252', DUOYU_ADDR: '127.0.0.1:5252',
   DUOYU_DEV: 'true', DUOYU_ROLE: 'api', DUOYU_DATA_DIR: '.ci-data',
   DUOYU_SECRET: randomBytes(32).toString('hex'),
   DUOYU_ADMIN_EMAIL: 'admin@example.invalid', DUOYU_ADMIN_PASSWORD: randomBytes(32).toString('hex'),

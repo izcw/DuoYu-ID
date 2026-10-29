@@ -18,7 +18,6 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 20px;
-  margin-bottom: 26px;
 }
 .dy-heading h1 {
   font-size: 26px;
@@ -34,10 +33,10 @@ body {
 }
 .dy-panel {
   background: var(--default-box-color, #fff);
-  border: 1px solid var(--art-border-color, #e9edf1);
   border-radius: 8px;
   padding: 25px;
   margin-bottom: 22px;
+  border: 1px solid #e6e6e8;
 }
 .dy-panel h2 {
   font-size: 17px;
@@ -59,13 +58,7 @@ body {
   color: #727782;
   word-break: break-all;
 }
-.dy-tag {
-  padding: 6px 10px;
-  background: #f4f4f5;
-  color: #333333;
-  border-radius: 6px;
-  font-size: 11px;
-}
+
 .dy-form .el-form-item {
   margin-bottom: 21px;
 }
@@ -221,12 +214,6 @@ body {
     font-size: 22px;
   }
 }
-.dy-editor {
-  max-width: 1050px;
-}
-.dy-editor .dy-heading h1 {
-  margin-top: 12px;
-}
 .dy-form-footer {
   display: flex;
   justify-content: flex-end;
@@ -235,11 +222,19 @@ body {
   margin-bottom: 20px;
 }
 .dy-client-options {
+  width: 100%;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
 }
-.dy-client-options > div {
+.dy-client-options > button {
+  appearance: none;
+  min-width: 0;
+  background: #fff;
+  color: #171717;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   padding: 20px;
   border: 1px solid #e4e4e7;
   border-radius: 6px;
@@ -346,7 +341,6 @@ body {
 }
 .dy-page > .dy-heading {
   padding-bottom: 24px;
-  border-bottom: 1px solid #e8e8eb;
   margin-bottom: 28px;
 }
 .dy-heading > div,
@@ -362,11 +356,10 @@ body {
 }
 .dy-panel {
   padding: 28px;
-  border-color: #e6e6e8;
 }
 .dy-panel > h2 {
-  padding-bottom: 16px;
-  border-bottom: 1px solid #efeff1;
+  padding-bottom: 10px;
+  /* border-bottom: 1px solid #efeff1; */
 }
 .dy-panel .dy-heading {
   margin-bottom: 20px;
@@ -420,9 +413,28 @@ body {
   border-radius: 5px;
   line-height: 1.7;
 }
-.dy-page :focus-visible {
+.dy-page :focus-visible:not(input):not(textarea):not(.el-select__wrapper):not(.el-input__wrapper) {
   outline: 2px solid #555;
   outline-offset: 3px;
+}
+/* Text fields retain their normal border without an extra focus ring. */
+input:focus,
+textarea:focus,
+.el-input__wrapper:focus-within,
+.el-select__wrapper:focus-within {
+  outline: none !important;
+}
+.el-input__inner:focus,
+.el-select__input:focus {
+  box-shadow: none !important;
+}
+.el-input__wrapper.is-focus,
+.el-input__wrapper:focus-within,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--el-input-border-color, var(--el-border-color)) inset !important;
+}
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--el-border-color) inset !important;
 }
 .dy-facts {
   margin: 0;
@@ -476,8 +488,8 @@ button.dy-shortcut:hover {
   position: sticky;
   bottom: 12px;
   z-index: 5;
-  border: 1px solid #e6e6e8;
-  border-radius: 6px;
+  border: 0;
+  border-radius: 0;
   background: #fff;
   padding: 14px 20px;
 }
@@ -523,9 +535,273 @@ button.dy-shortcut:hover {
   font-weight: 400;
 }
 
-.dy-shortcut { cursor: default; }
-button.dy-shortcut { cursor: pointer; }
+.dy-shortcut {
+  cursor: default;
+}
+button.dy-shortcut {
+  cursor: pointer;
+}
 
 @media (max-width: 800px) {
-  .layout-sidebar .menu-left-close { width: 0 !important; overflow: hidden; visibility: hidden; }
+  .layout-sidebar .menu-left-close {
+    width: 0 !important;
+    overflow: hidden;
+    visibility: hidden;
+  }
 }
+
+.dy-super-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #171717;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.6;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.dy-project-identity,
+.dy-logo-editor {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.dy-project-identity > div:last-child,
+.dy-logo-input {
+  min-width: 0;
+  flex: 1;
+}
+.dy-project-logo {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border: 1px solid #eeeeef;
+  border-radius: 6px;
+  background: #fff;
+}
+.dy-project-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.dy-project-logo-preview {
+  width: 64px;
+  height: 64px;
+}
+.dy-logo-input p {
+  margin: 8px 0 0;
+}
+
+/* Quiet secondary actions, shared by tables and page navigation. */
+.dy-page .el-button--default.is-text {
+  --el-button-text-color: #626771;
+  --el-button-hover-text-color: #17191d;
+  --el-button-hover-bg-color: #f0f1f3;
+  --el-button-active-text-color: #111111;
+  --el-button-active-bg-color: #e7e9ed;
+  --el-button-disabled-text-color: #a8adb5;
+  height: 32px;
+  padding: 0 10px;
+  border-color: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+.dy-page .el-button--default.is-text:focus-visible {
+  outline: 2px solid #727782;
+  outline-offset: 2px;
+}
+.dy-page .dy-back-button.el-button--default.is-text {
+  background: #f0f1f3;
+  margin: 0 0 12px;
+  padding-inline: 12px;
+}
+.dy-page .dy-back-button.el-button--default.is-text:hover:not(.is-disabled) {
+  background: #e7e9ed;
+}
+.dy-page .dy-back-button.el-button--default.is-text:active:not(.is-disabled) {
+  background: #dfe2e7;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dy-page .el-button--default.is-text {
+    transition: none;
+  }
+}
+
+.dy-client-options > button:hover:not(:disabled) {
+  border-color: #9b9fa6;
+  background: #fafafa;
+}
+.dy-client-options > button.selected {
+  border-color: #333;
+  background: #f7f7f8;
+}
+.dy-client-options > button:focus-visible {
+  outline: 2px solid #727782;
+  outline-offset: 3px;
+}
+.dy-client-options > button:disabled {
+  cursor: default;
+}
+
+.dy-panel .el-pagination {
+  margin-top: 20px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.dy-security-item {
+  gap: 12px;
+}
+.dy-security-icon {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #f3f4f5;
+  color: #53565d;
+  font-size: 20px;
+}
+.dy-security-icon img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+.dy-security-copy {
+  flex: 1;
+  min-width: 0;
+}
+.dy-security-item > .el-button {
+  flex-shrink: 0;
+  margin-left: 0;
+}
+
+/* Shared text controls: Element Plus draws the border on its outer wrapper. */
+:where(input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]):not([type=hidden]):not([type=button]):not([type=submit])),
+textarea {
+  font-size: 14px !important;
+  border: 1px solid #ededee !important;
+  color: #000000 !important;
+  box-shadow: none !important;
+}
+.el-input__wrapper,
+.el-input__wrapper:hover,
+.el-input__wrapper.is-focus,
+.el-input__wrapper:focus-within,
+.el-select__wrapper,
+.el-select__wrapper:hover,
+.el-select__wrapper.is-focused {
+  border: 1px solid #ededee !important;
+  box-shadow: none !important;
+}
+input.el-input__inner,
+input.el-select__input,
+input.el-range-input {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.el-textarea__inner,
+.el-textarea__inner:hover,
+.el-textarea__inner:focus {
+  box-shadow: none !important;
+}
+
+/* Icon selection cards keep native Element Plus keyboard and selection behavior. */
+.dy-choice-options {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+.dy-choice-options .el-checkbox,
+.dy-choice-options .el-radio {
+  margin: 0;
+  height: auto;
+  min-height: 76px;
+  padding: 16px;
+  border: 1px solid #ededee;
+  border-radius: 6px;
+  background: #fff;
+  white-space: normal;
+  transition: border-color .15s, background-color .15s;
+}
+.dy-choice-options .el-checkbox:hover,
+.dy-choice-options .el-radio:hover {
+  border-color: #9b9fa6;
+  background: #fafafa;
+}
+.dy-choice-options .is-checked {
+  border-color: #333;
+  background: #f7f7f8;
+}
+.dy-choice-options .el-checkbox__label,
+.dy-choice-options .el-radio__label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #111 !important;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: normal;
+  line-height: 1.5;
+}
+.dy-choice-options .el-checkbox:has(:focus-visible),
+.dy-choice-options .el-radio:has(:focus-visible) {
+  outline: 2px solid #727782;
+  outline-offset: 3px;
+}
+.dy-choice-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  font-size: 22px;
+}
+.dy-choice-icon img { width: 24px; height: 24px; object-fit: contain; }
+@media(max-width:600px) {
+  .dy-choice-options { grid-template-columns: 1fr; }
+}
+
+.dy-auth-code-row{display:flex;gap:12px;width:100%}
+.dy-authenticator-qr{width:240px;height:240px;max-width:100%;object-fit:contain;margin:20px 0}
+.dy-authenticator-secret{overflow-wrap:anywhere;font-size:14px}
+.dy-recovery-codes{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:24px 0;padding:20px;background:#f7f7f8;border-radius:6px}
+
+@keyframes dy-reject-autofill { from { opacity: 1; } to { opacity: 1; } }
+input.dy-manual-entry:-webkit-autofill {
+  animation-name: dy-reject-autofill !important;
+  animation-duration: 0.001s !important;
+  animation-iteration-count: 1 !important;
+}
+input.dy-manual-entry:autofill {
+  animation-name: dy-reject-autofill !important;
+  animation-duration: 0.001s !important;
+  animation-iteration-count: 1 !important;
+}
+
+/* Native choices retain keyboard semantics; the card alone shows selection. */
+.dy-choice-options .el-checkbox__input,
+.dy-choice-options .el-radio__input{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.dy-choice-options .el-checkbox__label,
+.dy-choice-options .el-radio__label{padding-left:0}
+
+.dy-account-projects{display:flex;flex-wrap:wrap;gap:6px}.dy-account-detail-title{display:flex;align-items:center;gap:12px;margin-bottom:24px}.dy-account-detail-title h2{margin:0}
+
+.dy-account-project-link{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;flex:0 0 36px;padding:4px;border:1px solid #ededee;border-radius:6px;background:#fff;transition:border-color .15s,background-color .15s}
+.dy-account-project-link:hover{border-color:#a0a3ab;background:#fafafa}
+.dy-account-project-link .el-image,.dy-account-project-link img{width:100%;height:100%;object-fit:contain}
+
+.dy-heading-actions{display:flex;flex-wrap:wrap;gap:8px}.dy-heading-actions .el-button{margin-left:0}

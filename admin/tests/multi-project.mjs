@@ -11,7 +11,7 @@ import jsQR from 'jsqr'
 import {PNG} from 'pngjs'
 
 const env=Object.fromEntries(fs.readFileSync('../.env.local','utf8').split(/\r?\n/).filter(x=>x.includes('=')).map(x=>[x.slice(0,x.indexOf('=')),x.slice(x.indexOf('=')+1)]))
-assert.equal(env.DUOYU_DEV,'true');const issuer='http://localhost:8080';assert.equal(env.DUOYU_ORIGIN,issuer)
+assert.equal(env.DUOYU_DEV,'true');const issuer='http://localhost:5252';assert.equal(env.DUOYU_ORIGIN,issuer)
 const suffix=randomBytes(7).toString('hex'),email='matrix-'+suffix+'@example.invalid'
 const ids=['app_matrix_a_'+suffix,'app_matrix_b_'+suffix,'app_matrix_spa_'+suffix]
 const secret=randomBytes(32).toString('hex'),mac=v=>createHmac('sha256',Buffer.from(env.DUOYU_SECRET,'hex')).update(v).digest('hex')
@@ -34,7 +34,7 @@ document.getElementById('login').onclick=async()=>{const verifier=b64(crypto.get
 </script>`}
 
 try{
- for(let i=0;i<3;i++)sql(`INSERT INTO apps(id,name,secret_hash,redirects,public,backchannel_logout_uri) VALUES('${ids[i]}','Matrix ${i}','${i===0?mac(secret):''}',ARRAY['http://localhost:${ports[i]}/callback'],${i!==0},'${i<2?'http://localhost:'+ports[i]+'/backchannel-logout':''}')`)
+ for(let i=0;i<3;i++)sql(`INSERT INTO apps(id,name,secret_hash,redirects,public,backchannel_logout_uri,allowed_origins) VALUES('${ids[i]}','Matrix ${i}','${i===0?mac(secret):''}',ARRAY['http://localhost:${ports[i]}/callback'],${i!==0},'${i<2?'http://localhost:'+ports[i]+'/backchannel-logout':''}',ARRAY['http://localhost:${ports[i]}'])`)
  for(let i=0;i<2;i++){const child=spawn(path.resolve('../test-results/oidc-client.exe'),[],{env:{...process.env,DUOYU_ISSUER:issuer,CLIENT_ID:ids[i],CLIENT_SECRET:i===0?secret:'',CLIENT_PORT:String(ports[i]),CLIENT_ONLINE_CHECK:i===1?'false':'true'},windowsHide:true,stdio:'ignore'});processes.push(child);await ready(ports[i])}
  spa=http.createServer((req,res)=>{res.setHeader('Content-Type','text/html; charset=utf-8');res.setHeader('Cache-Control','no-store');res.end(spaPage())});await new Promise(r=>spa.listen(ports[2],'127.0.0.1',r))
  browser=await chromium.launch({executablePath:process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true})
@@ -60,13 +60,20 @@ try{
 
 
 
- await page.goto(issuer+'/#/account/profile');await page.getByRole('button',{name:'添加',exact:true}).waitFor();await page.waitForLoadState('networkidle')
+ await page.goto(issuer+'/#/account/profile');await page.getByRole('button',{name:'添加手机',exact:true}).waitFor();await page.waitForLoadState('networkidle')
  const cdp=await context.newCDPSession(page);await cdp.send('WebAuthn.enable');const auth=await cdp.send('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',transport:'internal',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}})
- seed();await page.getByRole('button',{name:'添加',exact:true}).click();await page.getByPlaceholder('6 位验证码').fill('123456');const registered=page.waitForResponse(r=>r.url().endsWith('/api/me/passkeys/finish'));await page.getByRole('button',{name:'继续',exact:true}).click();assert.equal((await registered).status(),200);await page.waitForURL('**/#/account/profile');await page.waitForLoadState('networkidle')
+ seed();await page.getByRole('button',{name:'添加手机',exact:true}).click();await page.getByPlaceholder('6 位验证码').focus();await page.getByPlaceholder('6 位验证码').fill('123456');const registered=page.waitForResponse(r=>r.url().endsWith('/api/me/passkeys/finish'));await page.getByRole('button',{name:'继续',exact:true}).click();assert.equal((await registered).status(),200);await page.waitForURL('**/#/account/profile');await page.waitForLoadState('networkidle')
  await page.goto(issuer+'/login');await page.locator('#switch').click();await page.locator('#form').waitFor({state:'visible'});await page.goto('http://localhost:'+ports[0]+'/login');await page.locator('#passkey').click();await page.waitForURL('http://localhost:'+ports[0]+'/');assert.equal(JSON.parse(await page.locator('pre').innerText()).sub,a.sub);pass('virtual passkey login completes confidential project callback')
  const credentials=await cdp.send('WebAuthn.getCredentials',{authenticatorId:auth.authenticatorId})
  const phone=await browser.newContext({viewport:{width:390,height:844}}),mobile=await phone.newPage();await phone.route('**/api/auth/code',r=>r.abort());const phoneCDP=await phone.newCDPSession(mobile);await phoneCDP.send('WebAuthn.enable');const phoneAuth=await phoneCDP.send('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',transport:'internal',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}});for(const credential of credentials.credentials)await phoneCDP.send('WebAuthn.addCredential',{authenticatorId:phoneAuth.authenticatorId,credential})
  await page.goto(issuer+'/login');await page.locator('#switch').click();await page.locator('#form').waitFor({state:'visible'});await page.goto('http://localhost:'+ports[0]+'/login');const qrResponse=page.waitForResponse(r=>r.url().endsWith('/api/auth/qr'));await page.locator('#qr-open').click();const qr=(await(await qrResponse).json()).data;const png=PNG.sync.read(Buffer.from(qr.image.split(',')[1],'base64')),decoded=jsQR(new Uint8ClampedArray(png.data),png.width,png.height);assert.ok(decoded);await mobile.goto(decoded.data);await mobile.waitForFunction(()=>!document.getElementById('verify').disabled);await mobile.locator('#verify').click();await mobile.locator('#approve').waitFor({state:'visible'});await mobile.locator('#approve').click();await page.waitForURL('http://localhost:'+ports[0]+'/');assert.equal(JSON.parse(await page.locator('pre').innerText()).sub,a.sub);pass('QR + separate phone context + virtual passkey + approval completes project callback')
+
+ await page.addInitScript(()=>Object.defineProperty(navigator,'userAgent',{get:()=> 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15'}));
+ await page.goto(issuer+'/login');await page.locator('#switch').click();await page.locator('#form').waitFor({state:'visible'});await page.goto('http://localhost:'+ports[0]+'/login');await page.locator('#qr-open').click();await page.locator('#qr-device').waitFor();
+ sql(`UPDATE passkeys SET qr_enabled=false WHERE user_id=(SELECT id FROM users WHERE email='${email}')`);
+ let rejectedDevice=page.waitForResponse(r=>r.url().endsWith('/api/auth/qr/device/finish'));await page.locator('#qr-device').click();assert.equal((await rejectedDevice).status(),401);pass('Apple direct verification rejects credentials without QR enrollment');
+ sql(`UPDATE passkeys SET qr_enabled=true WHERE user_id=(SELECT id FROM users WHERE email='${email}')`);
+ await page.locator('#qr-device').click();await page.waitForURL('http://localhost:'+ports[0]+'/');assert.equal(JSON.parse(await page.locator('pre').innerText()).sub,a.sub);pass('Apple current-device QR login completes project callback');
  sql(`UPDATE users SET enabled=false WHERE email='${email}'`);await page.goto('http://localhost:'+ports[0]+'/');assert.equal(await page.locator('pre').count(),0);pass('disabled account invalidates project A session through online validation')
  assert.deepEqual(errors,[])
 }finally{

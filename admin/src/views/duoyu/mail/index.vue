@@ -1,5 +1,5 @@
 <template>
-  <div class="dy-page" v-loading="loading">
+  <div class="dy-page art-page-view" v-loading="loading">
     <div class="dy-heading"
       ><div><h1>项目邮件</h1><p>统一发送通知、业务验证码和告警</p></div
       ><el-button :loading="loading" @click="load">刷新</el-button></div
@@ -26,7 +26,13 @@
             :label="label"
             :value="key" /></el-select
       ></div>
-      <el-table :data="rows" empty-text="暂无项目邮件记录">
+      <el-table :data="rows" empty-text="暂无项目邮件记录"
+        ><el-table-column
+          type="index"
+          label="序号"
+          width="76"
+          :index="(index: number) => (page - 1) * 20 + index + 1"
+        />
         <el-table-column prop="app_name" label="项目" min-width="130" /><el-table-column
           prop="recipient"
           label="收件人"
@@ -65,6 +71,7 @@
           show-overflow-tooltip
         /><el-table-column prop="error_code" label="结果说明" min-width="200" /> </el-table
       ><el-pagination
+        v-if="total > 20"
         v-model:current-page="page"
         :page-size="20"
         :total="total"
@@ -158,6 +165,8 @@ Content-Type: application/json
       if (current === generation) {
         rows.value = result.items
         total.value = result.total
+        if (page.value > Math.max(1, Math.ceil(total.value / 20)))
+          page.value = Math.max(1, Math.ceil(total.value / 20))
       }
     } catch (e: any) {
       if (current === generation && e.name !== 'AbortError') error.value = e.message

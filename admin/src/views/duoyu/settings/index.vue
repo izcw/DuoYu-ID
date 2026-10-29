@@ -1,5 +1,5 @@
 <template>
-  <div class="dy-page" v-loading="loading"
+  <div class="dy-page art-page-view" v-loading="loading"
     ><div class="dy-heading"
       ><div><h1>邮件与系统设置</h1><p>注册规则、发送渠道与邮件预览</p></div></div
     ><div v-if="error" class="dy-error">{{ error }}</div

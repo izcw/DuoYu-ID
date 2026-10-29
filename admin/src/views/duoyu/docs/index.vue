@@ -1,8 +1,8 @@
 <template>
-  <div class="dy-page"
+  <div class="dy-page art-page-view"
     ><div class="dy-heading"
       ><div><h1>接入文档</h1><p>客户端配置、标准协议与会话管理</p></div
-      ><el-button @click="download">下载 Service API 文档</el-button></div
+      ><div class="dy-heading-actions"><el-button type="primary" @click="copyGuide">复制 AI 接入说明</el-button><el-button @click="$router.push('/manage/project-api')">项目管理 API</el-button><el-button @click="download">下载 OpenAPI 文档</el-button></div></div
     ><div class="dy-hero"
       ><span class="dy-kicker">接入指南</span><h2>使用多鱼账号登录</h2
       ><p
@@ -32,11 +32,23 @@ Code challenge method: S256</pre
       ></section
     ><section class="dy-panel"
       ><h2>03 · 身份资料</h2
-      ><el-table :data="claims"
-        ><el-table-column prop="name" label="字段" /><el-table-column
-          prop="scope"
-          label="范围" /><el-table-column prop="description" label="说明" /></el-table
-      ><p class="dy-muted"
+      ><el-table :data="claims.slice((claimPage - 1) * 20, claimPage * 20)"
+        ><el-table-column
+          type="index"
+          label="序号"
+          width="76"
+          :index="(index: number) => (claimPage - 1) * 20 + index + 1" /><el-table-column
+          prop="name"
+          label="字段" /><el-table-column prop="scope" label="范围" /><el-table-column
+          prop="description"
+          label="说明" /></el-table
+      ><el-pagination
+        v-if="claims.length > 20"
+        v-model:current-page="claimPage"
+        :page-size="20"
+        :total="claims.length"
+        layout="total, prev, pager, next"
+      /><p class="dy-muted"
         >头像和昵称通过 UserInfo 更新；项目不访问中心数据库，不保存头像磁盘路径。</p
       ></section
     ><section class="dy-panel"
@@ -49,7 +61,7 @@ Code challenge method: S256</pre
         查询，但不会凭空注销项目本地会话。若需要在 5
         分钟内生效，项目应在该周期内使用有效令牌复核身份或重新发起认证。</p
       ><p class="dy-muted"
-        >退出项目、退出中心是不同操作。第一版不承诺全应用即时退出；prompt=none 暂不支持。</p
+        >退出项目、退出中心是不同操作。可接入后台退出通知；prompt=none 在已有授权且会话满足项目策略时支持。</p
       ></section
     ><section class="dy-panel"
       ><h2>05 · 服务端 API</h2
@@ -72,20 +84,26 @@ Authorization: Bearer YOUR_API_KEY</pre
 <script setup lang="ts">
   import { ref, onMounted } from 'vue'
   import { api } from '@/api/duoyu'
+ import {copyDuoyuText} from '@/utils/duoyu-clipboard'
+ import {ElMessage} from 'element-plus'
   const diagnostics = ref<any>(null),
     diagnosticError = ref('')
   async function check() {
     try {
       diagnosticError.value = ''
-      diagnostics.value = await api('/api/admin/diagnostics')
+      diagnostics.value = await api('/api/admin/diagnostics');origin.value=diagnostics.value.issuer
     } catch (e: any) {
       diagnosticError.value = e.message
     }
   }
   onMounted(check)
 
-  const origin = window.location.origin
+  const origin = ref(window.location.origin)
+ async function copyGuide(){try{const doc=await api('/api/admin/ai-integration');await copyDuoyuText(doc.guide);ElMessage.success('AI 接入说明已复制')}catch(e:any){ElMessage.error(e.message)}}
+  const claimPage = ref(1)
   const claims = [
+    { name: 'roles', scope: 'profile', description: '当前项目角色字段数组' },
+    { name: 'project_role', scope: 'profile', description: '当前项目角色名称、字段与描述' },
     { name: 'sid', scope: 'openid', description: '中心会话标识，用于后台退出通知匹配' },
     { name: 'sub', scope: 'openid', description: '稳定的用户身份标识' },
     { name: 'name', scope: 'profile', description: '显示名称' },

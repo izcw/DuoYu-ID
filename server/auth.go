@@ -16,8 +16,9 @@ import (
 
 func (s *Server) sendCode(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Email   string `json:"email"`
-		Purpose string `json:"purpose"`
+		Email         string `json:"email"`
+		Purpose       string `json:"purpose"`
+		AuthRequestID string `json:"auth_request_id"`
 	}
 	if decode(r, &in) != nil {
 		fail(w, 400, "请求格式错误")
@@ -26,6 +27,12 @@ func (s *Server) sendCode(w http.ResponseWriter, r *http.Request) {
 	in.Email = normalizeEmail(in.Email)
 	if in.Email == "" || (in.Purpose != "login" && in.Purpose != "reset" && in.Purpose != "email") {
 		fail(w, 400, "请填写有效邮箱和用途")
+		return
+	}
+	if in.Purpose == "login" && !s.checkLoginProject(w, r, in.Email, in.AuthRequestID) {
+		return
+	}
+	if in.Purpose == "login" && !s.checkProjectMethod(w, r, in.AuthRequestID, "code") {
 		return
 	}
 	if in.Purpose == "email" {
@@ -96,22 +103,37 @@ func (s *Server) consumeCode(ctx context.Context, email, purpose, code string) b
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		Code     string `json:"code"`
-		Mode     string `json:"mode"`
-		Register bool   `json:"register"`
+		Email         string `json:"email"`
+		Password      string `json:"password"`
+		Code          string `json:"code"`
+		Mode          string `json:"mode"`
+		Register      bool   `json:"register"`
+		AuthRequestID string `json:"auth_request_id"`
 	}
 	if decode(r, &in) != nil {
 		fail(w, 400, "请求格式错误")
 		return
 	}
 	in.Email = normalizeEmail(in.Email)
-	if in.Email == "" || len(in.Password) > 128 || (in.Mode != "code" && in.Mode != "password") {
+	if in.Email == "" || len(in.Password) > 256 || (in.Mode != "code" && in.Mode != "password") {
 		fail(w, 400, "请检查登录信息")
 		return
 	}
+	if !s.checkLoginProject(w, r, in.Email, in.AuthRequestID) {
+		return
+	}
+	if !s.checkProjectMethod(w, r, in.AuthRequestID, in.Mode) {
+		return
+	}
 	if s.limited(r, "login-ip:"+remoteIP(r), 50, 15*time.Minute) || s.limited(r, "login-email:"+in.Email, 15, 15*time.Minute) {
+		// Keep the account's remaining lock time visible even when request limiting also applies.
+		if in.Mode == "password" {
+			var until time.Time
+			if s.db.QueryRow(r.Context(), "SELECT password_locked_until FROM users WHERE email=$1 AND password_locked_until>now()", in.Email).Scan(&until) == nil {
+				passwordLockedResponse(w, until)
+				return
+			}
+		}
 		fail(w, 429, "尝试次数过多，请稍后再试")
 		return
 	}
@@ -129,7 +151,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		valid = s.consumeCode(r.Context(), in.Email, "login", in.Code)
 		amr = "otp"
 	} else {
-		valid = checkPassword(in.Password, h)
+		var lockedUntil time.Time
+		valid, lockedUntil, e = s.verifyAccountPassword(r.Context(), in.Email, in.Password)
+		if e != nil {
+			fail(w, 503, "登录暂不可用")
+			return
+		}
+		if !lockedUntil.IsZero() {
+			s.audit(r.Context(), id, "login.failed", "", false)
+			passwordLockedResponse(w, lockedUntil)
+			return
+		}
 	}
 	if !valid || (!missing && !enabled) {
 		s.audit(r.Context(), id, "login.failed", "", false)
@@ -144,7 +176,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id = randomID()
-		_, e = s.db.Exec(r.Context(), "INSERT INTO users(id,email,name) VALUES($1,$2,$3)", id, in.Email, strings.Split(in.Email, "@")[0])
+		initialPassword, err := randomRegistrationPassword()
+		if err != nil {
+			fail(w, 503, "账号创建暂不可用，请重试")
+			return
+		}
+		_, e = s.db.Exec(r.Context(), "INSERT INTO users(id,email,name,password_hash) VALUES($1,$2,$3,$4)", id, in.Email, strings.Split(in.Email, "@")[0], hashPassword(initialPassword))
 		if e != nil {
 			fail(w, 409, "账号创建失败，请重新登录")
 			return
@@ -203,10 +240,7 @@ func (s *Server) artUser(w http.ResponseWriter, r *http.Request) {
 	roles := []string{"R_USER"}
 	if u.Admin {
 		roles = []string{"R_SUPER"}
-	} else if u.ManagementRole == "auditor" {
-		roles = []string{"R_AUDITOR"}
-	} else if u.ManagementRole == "maintainer" {
-		roles = []string{"R_MAINTAINER"}
+
 	}
 	ok(w, map[string]any{"userId": u.ID, "userName": u.Name, "email": u.Email, "avatar": u.Avatar, "roles": roles, "buttons": []string{}})
 }
@@ -235,7 +269,7 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if decode(r, &in) != nil || validPassword(in.Password) != nil {
-		fail(w, 400, "密码须为 12–128 字节")
+		fail(w, 400, "密码须为 6–64 个字符")
 		return
 	}
 	in.Email = normalizeEmail(in.Email)
@@ -250,7 +284,7 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var id string
-	e = tx.QueryRow(r.Context(), "UPDATE users SET password_hash=$1 WHERE email=$2 AND enabled RETURNING id", hashPassword(in.Password), in.Email).Scan(&id)
+	e = tx.QueryRow(r.Context(), "UPDATE users SET password_hash=$1,password_failures=0,password_lock_level=0,password_locked_until=NULL WHERE email=$2 AND enabled RETURNING id", hashPassword(in.Password), in.Email).Scan(&id)
 	if e != nil {
 		fail(w, 400, "无法重置该账号")
 		return
@@ -274,7 +308,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if decode(r, &in) != nil || validPassword(in.Password) != nil {
-		fail(w, 400, "密码须为 12–128 字节")
+		fail(w, 400, "密码须为 6–64 个字符")
 		return
 	}
 	if !s.consumeCode(r.Context(), u.Email, "reset", in.Code) {
@@ -287,7 +321,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	tx.Exec(r.Context(), "UPDATE users SET password_hash=$1 WHERE id=$2", hashPassword(in.Password), u.ID)
+	tx.Exec(r.Context(), "UPDATE users SET password_hash=$1,password_failures=0,password_lock_level=0,password_locked_until=NULL WHERE id=$2", hashPassword(in.Password), u.ID)
 	tx.Exec(r.Context(), "DELETE FROM sessions WHERE user_id=$1", u.ID)
 	tx.Exec(r.Context(), "DELETE FROM access_tokens WHERE user_id=$1", u.ID)
 	if tx.Commit(r.Context()) != nil {

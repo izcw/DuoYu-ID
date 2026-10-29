@@ -15,7 +15,7 @@ const errors = []
 page.on('pageerror', e => errors.push(e.message))
 fs.mkdirSync('../test-results', { recursive: true })
 try {
-  await page.goto('http://localhost:8080/login')
+  await page.goto('http://localhost:5252/login')
   await page.screenshot({ path: '../test-results/login-desktop.png', fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
   await page.screenshot({ path: '../test-results/login-mobile.png', fullPage: true })
@@ -54,7 +54,7 @@ try {
   await page.getByRole('heading', { name: '账号与安全' }).waitFor()
   await page.screenshot({ path: '../test-results/account.png', fullPage: true })
   for (const route of ['overview', 'users', 'apps', 'keys', 'audit', 'settings', 'mail', 'docs']) {
-    await page.goto('http://localhost:8080/#/manage/' + route)
+    await page.goto('http://localhost:5252/#/manage/' + route)
     await page.waitForLoadState('networkidle')
     const heading = {overview:'欢迎回来', users:'账号管理', apps:'项目管理', keys:'API 凭证', audit:'安全日志', settings:'邮件与系统设置', docs:'接入文档', mail:'项目邮件'}[route]
     await page.locator('.dy-page h1').filter({hasText:heading}).waitFor({state:'visible'})
@@ -77,7 +77,7 @@ try {
       const body = await (await fetch('http://localhost:18025/api/v1/message/' + msg.ID)).json()
       return body.Text.match(/验证码：(\d{6})/)[1]
     }
-    await page.goto('http://localhost:8080/#/account/profile')
+    await page.goto('http://localhost:5252/#/account/profile')
     await page.getByRole('button', {name: '添加', exact:true}).click()
     const code = await getCode()
     await page.getByPlaceholder('6 位验证码', {exact:true}).fill(code)
@@ -86,7 +86,7 @@ try {
     assert.equal((await registered).status(),200)
     await page.getByRole('dialog').waitFor({state:'hidden'})
     await page.evaluate(() => fetch('/api/auth/logout', {method:'POST',headers:{'X-Duoyu-Request':'1'}}))
-    await page.goto('http://localhost:8080/login')
+    await page.goto('http://localhost:5252/login')
     await page.locator('#passkey').click()
     await page.waitForURL('**/#/account/profile')
     await page.getByRole('heading', {name:'账号与安全'}).waitFor()

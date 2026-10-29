@@ -1,10 +1,10 @@
 <template>
-  <div class="dy-page" v-loading="loading"
+  <div class="dy-page art-page-view" v-loading="loading"
     ><div class="dy-heading"
       ><div
         ><h1>{{ dialog ? titles[dialog] : '账号与安全' }}</h1
         ><p>个人资料、登录方式与设备会话</p></div
-      ><span class="dy-tag">我的账号</span></div
+      ></div
     ><div v-if="error" class="dy-error">{{ error }}</div
     ><div v-if="!dialog" class="dy-shortcuts"
       ><div class="dy-shortcut"
@@ -16,7 +16,7 @@
       ></div
     ><div v-if="!dialog" class="dy-grid"
       ><section class="dy-panel"
-        ><h2>个人资料</h2
+        ><h2>个人资料 <span v-if="me.admin" class="dy-super-badge">超级管理员</span></h2
         ><div style="display: flex; align-items: center; margin: 24px 0"
           ><img class="dy-avatar" :src="me.avatar || '/avatar-default.svg'" alt="头像" /><div
             ><el-button @click="uploadInput?.click()">更换头像</el-button
@@ -27,26 +27,41 @@
               accept="image/jpeg,image/png,image/webp"
               style="display: none"
               @change="upload" /></div></div
-        ><el-form label-position="top"
+        ><el-form label-position="top" autocomplete="off"
           ><el-form-item label="昵称"><el-input v-model="me.name" maxlength="40" /></el-form-item
           ><el-form-item label="邮箱"><el-input :model-value="me.email" disabled /></el-form-item
-          ><el-form-item label="用户标识"
-            ><span class="dy-code">{{ me.id }}</span></el-form-item
+          ><el-form-item label="账号 ID"
+            ><span class="dy-code">{{ me.account_id }}</span></el-form-item
           ></el-form
         ><el-button type="primary" :loading="saving" @click="saveProfile"
           >保存资料</el-button
         ></section
       ><section class="dy-panel"
         ><h2>安全设置</h2
-        ><div class="dy-listitem"
-          ><div>账号密码<p>设置或修改密码，需验证当前邮箱</p></div
+        ><div class="dy-listitem dy-security-item"
+          ><span class="dy-security-icon" aria-hidden="true"
+            ><ArtSvgIcon icon="ri:lock-password-line" /></span
+          ><div class="dy-security-copy">账号密码<p>设置或修改密码，需验证当前邮箱</p></div
           ><el-button @click="dialog = 'password'">修改</el-button></div
-        ><div class="dy-listitem"
-          ><div>登录邮箱<p>同时验证原邮箱与新邮箱</p></div
+        ><div class="dy-listitem dy-security-item"
+          ><span class="dy-security-icon" aria-hidden="true"
+            ><ArtSvgIcon icon="ri:mail-line" /></span
+          ><div class="dy-security-copy">登录邮箱<p>同时验证原邮箱与新邮箱</p></div
           ><el-button @click="dialog = 'email'">更换</el-button></div
-        ><div class="dy-listitem"
-          ><div>通行密钥 / 手机通行证<p>支持 iPhone Face ID、Touch ID 和电脑扫码登录</p></div
+        ><div class="dy-listitem dy-security-item"
+          ><span class="dy-security-icon" aria-hidden="true"><img src="/passkey.png" alt="" /></span
+          ><div class="dy-security-copy">通行密钥<p>使用设备验证登录账号</p></div
           ><el-button @click="dialog = 'passkey'">添加</el-button></div
+        ><div class="dy-listitem dy-security-item"
+          ><span class="dy-security-icon" aria-hidden="true"><img src="/iphone.png" alt="" /></span
+          ><div class="dy-security-copy"
+            >iPhone 扫码登录<p>{{
+              passkeys.some((p) => p.qr_enabled)
+                ? '已添加手机通行密钥，可扫码验证登录'
+                : '未添加，先绑定手机通行密钥才能扫码登录'
+            }}</p></div
+          ><el-button @click="dialog = 'iphone'">添加手机</el-button></div
+        ><div class="dy-listitem dy-security-item"><span class="dy-security-icon" aria-hidden="true"><img src="/authenticator.png" alt="" /></span><div class="dy-security-copy">身份验证器<p>支持 Microsoft Authenticator 等动态验证码应用</p></div><el-button @click="dialog = 'authenticator'">管理</el-button></div
         ><div class="dy-muted" style="margin-top: 24px"
           >修改密码或邮箱后，中心会话与访问令牌将被撤销。已接入退出通知的项目会同步处理；其他项目需在线复核登录状态。</div
         ></section
@@ -57,14 +72,28 @@
         >还没有通行密钥。添加后可使用设备验证快速登录。</div
       ><div class="dy-listitem" v-for="p in passkeys" :key="p.id"
         ><div
-          >{{ p.name }}<p>创建于 {{ dateText(p.created_at) }}</p></div
+          >{{ p.device_type || p.name }}
+          <el-tag v-if="p.qr_enabled" size="small" type="info">iPhone 扫码登录</el-tag>
+          <p>创建环境：{{ p.registration_device || '历史记录未保存' }}</p>
+          <p
+            >支持方式：{{ (p.methods || ['浏览器未提供']).join(' / ')
+            }}<span v-if="p.backup_eligible"> · 支持备份 / 同步</span></p
+          >
+          <p>{{ p.name }} · 创建于 {{ dateText(p.created_at) }}</p></div
         ><el-button text type="danger" @click="selectPasskey(p.id)">移除</el-button></div
       ></section
     ><section v-if="!dialog" class="dy-panel"
       ><h2>中心登录会话</h2
       ><p class="dy-muted">仅展示多鱼账号中心的会话，不代表各项目的在线设备。</p
-      ><el-table :data="sessions" empty-text="暂无有效会话"
+      ><el-table
+        :data="sessions.slice((sessionPage - 1) * 20, sessionPage * 20)"
+        empty-text="暂无有效会话"
         ><el-table-column
+          type="index"
+          label="序号"
+          width="76"
+          :index="(index: number) => (sessionPage - 1) * 20 + index + 1"
+        /><el-table-column
           label="设备 / 浏览器"
           min-width="220"
           show-overflow-tooltip
@@ -79,16 +108,21 @@
             ><el-button text type="danger" @click="revoke(row)">撤销</el-button></template
           ></el-table-column
         ></el-table
-      ></section
-    >
-    <section v-if="dialog" class="dy-panel dy-editor"
-      ><el-button text @click="closeDialog">← 返回账号与安全</el-button
-      ><el-form label-position="top"
+      ><el-pagination
+        v-if="sessions.length > 20"
+        v-model:current-page="sessionPage"
+        :page-size="20"
+        :total="sessions.length"
+        layout="total, prev, pager, next"
+    /></section>
+    <AuthenticatorSettings v-if="dialog === 'authenticator'" /><section v-if="dialog && dialog !== 'authenticator'" class="dy-panel"
+      ><el-button text class="dy-back-button" @click="closeDialog">← 返回账号与安全</el-button
+      ><el-form label-position="top" autocomplete="off"
         ><template v-if="dialog === 'email'"
           ><el-form-item label="新的邮箱"><el-input v-model="newEmail" type="email" /></el-form-item
           ><el-form-item label="新邮箱验证码"
             ><div style="display: flex; gap: 10px; width: 100%"
-              ><el-input v-model="newCode" maxlength="6" /><el-button
+              ><el-input v-model="newCode" autocomplete="off" name="new-email-verification-code" data-lpignore="true" data-1p-ignore maxlength="6" /><el-button
                 :disabled="sending"
                 @click="send(newEmail, 'email')"
                 >发送</el-button
@@ -97,7 +131,7 @@
           ></template
         ><el-form-item :label="'当前邮箱验证码 · ' + me.email"
           ><div style="display: flex; gap: 10px; width: 100%"
-            ><el-input v-model="code" maxlength="6" placeholder="6 位验证码" /><el-button
+            ><el-input v-model="code" v-manual-entry inputmode="numeric" autocomplete="off" name="security-verification-code" data-lpignore="true" data-1p-ignore maxlength="6" placeholder="6 位验证码" /><el-button
               :disabled="sending"
               @click="
                 send(
@@ -111,11 +145,20 @@
         ><el-form-item v-if="dialog === 'password'" label="新密码"
           ><el-input
             v-model="password"
+            v-manual-entry
+            autocomplete="new-password"
+            name="new-password"
+            data-lpignore="true"
+            data-1p-ignore
             type="password"
             show-password
-            placeholder="至少 12 位"
+            placeholder="6–64 个字符"
             maxlength="128" /></el-form-item
-        ><div v-if="dialog === 'passkey'">
+        ><p v-if="dialog === 'iphone'" class="dy-muted"
+          >请在 iPhone 上保存本次通行密钥。电脑添加时选择手机并按系统提示扫码；也可直接在 iPhone 的
+          Safari 中打开此页添加。完成后才能使用登录页的 iPhone 扫码登录。</p
+        >
+        <div v-if="dialog === 'passkey'">
           <el-radio-group v-model="passkeyTarget"
             ><el-radio value="device">当前设备</el-radio
             ><el-radio value="phone">iPhone / 其他手机</el-radio></el-radio-group
@@ -136,6 +179,8 @@
   >
 </template>
 <script setup lang="ts">
+import AuthenticatorSettings from './AuthenticatorSettings.vue'
+import { vManualEntry } from '@/directives/manual-entry'
   import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
   import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
@@ -147,6 +192,7 @@
     passkeyTarget = ref('device'),
     me = ref<any>({}),
     sessions = ref<any[]>([]),
+    sessionPage = ref(1),
     passkeys = ref<any[]>([]),
     loading = ref(true),
     saving = ref(false),
@@ -155,7 +201,9 @@
     dialog = computed({
       get: () =>
         route.path === '/account/security' &&
-        ['password', 'email', 'passkey', 'deletePasskey'].includes(String(route.query.action))
+        ['password', 'email', 'passkey', 'iphone', 'deletePasskey', 'authenticator'].includes(
+          String(route.query.action)
+        )
           ? String(route.query.action)
           : '',
       set: (value: string) => {
@@ -171,11 +219,19 @@
     deleteID = ref(''),
     sending = ref(false)
   const titles: Record<string, string> = {
+    authenticator: '身份验证器',
     password: '修改密码',
     email: '更换邮箱',
     passkey: '添加通行密钥',
+    iphone: '添加 iPhone 扫码登录',
     deletePasskey: '移除通行密钥'
   }
+  watch(
+    () => sessions.value.length,
+    (count) => {
+      sessionPage.value = Math.min(sessionPage.value, Math.max(1, Math.ceil(count / 20)))
+    }
+  )
   const securityDirty = computed(
     () => !!dialog.value && !!(code.value || newCode.value || newEmail.value || password.value)
   )
@@ -272,6 +328,13 @@
     }
   }
   async function securityAction() {
+    if (
+      dialog.value === 'password' &&
+      ([...password.value].length < 6 || [...password.value].length > 64)
+    ) {
+      ElMessage.error('密码须为 6–64 个字符')
+      return
+    }
     saving.value = true
     try {
       if (dialog.value === 'password') {
@@ -296,10 +359,18 @@
         dialog.value = ''
         await load()
       } else {
-        if (!window.PublicKeyCredential) throw Error('浏览器不支持通行密钥')
-        const options = await api('/api/me/passkeys/begin', 'POST', { code: code.value })
+        if (!window.isSecureContext) throw Error('当前页面使用 HTTP，无法添加通行密钥。请通过 HTTPS 账号中心操作；本地开发请使用 localhost。')
+        if (typeof navigator.credentials?.create !== 'function') throw Error('当前浏览器未提供通行密钥功能，请检查浏览器版本或安全策略。')
+        const options = await api('/api/me/passkeys/begin', 'POST', {
+          code: code.value,
+          qr: dialog.value === 'iphone'
+        })
         const p = options.publicKey
-        if (passkeyTarget.value === 'phone') p.hints = ['hybrid']
+        if (
+          (dialog.value === 'passkey' && passkeyTarget.value === 'phone') ||
+          (dialog.value === 'iphone' && !/iPhone|iPad|Android/i.test(navigator.userAgent))
+        )
+          p.hints = ['hybrid']
         p.challenge = toBuffer(p.challenge)
         p.user.id = toBuffer(p.user.id)
         p.excludeCredentials?.forEach((c: any) => (c.id = toBuffer(c.id)))

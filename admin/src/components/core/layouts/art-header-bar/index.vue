@@ -60,7 +60,7 @@
         <ArtMixedMenu v-if="isTopLeftMenu" :list="menuList" />
       </div>
 
-      <div class="flex-c gap-2.5">
+      <div class="dy-header-actions flex-c shrink-0 gap-2.5 pr-6 max-sm:pr-4">
         <!-- 搜索 -->
         <div
           v-if="shouldShowGlobalSearch"

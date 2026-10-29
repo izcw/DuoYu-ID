@@ -63,13 +63,18 @@
     <div class="flex">
       <div
         class="flex-cc art-card-xs relative top-0 size-8 leading-8 text-center c-p tad-200 hover:!bg-hover-color"
+        role="button"
+        tabindex="0"
+        aria-label="页签菜单"
+        @keydown.enter.prevent="($event.currentTarget as HTMLElement).click()"
+        @keydown.space.prevent="($event.currentTarget as HTMLElement).click()"
         :style="{
           borderRadius: 'calc(var(--custom-radius) / 2.5 + 0px)',
           marginTop: tabStyle === 'tab-google' ? '-2px' : ''
         }"
         @click="(e: MouseEvent) => showMenu(e, activeTab)"
       >
-        <ArtSvgIcon icon="iconamoon:arrow-down-2-thin" class="text-2xl text-g-700" />
+        <ArtSvgIcon icon="ri:menu-3-line" class="text-2xl text-g-700" />
       </div>
     </div>
 
@@ -397,7 +402,13 @@
 
     const showMenu = (e: MouseEvent, path?: string) => {
       clickedPath.value = path || ''
-      menuRef.value?.show(e)
+      const target = e.currentTarget as HTMLElement | null
+      if (e.type === 'click' && e.detail === 0 && target) {
+        const rect = target.getBoundingClientRect()
+        menuRef.value?.show(new MouseEvent('click', { clientX: rect.right, clientY: rect.bottom }))
+      } else {
+        menuRef.value?.show(e)
+      }
       e.preventDefault()
       e.stopPropagation()
     }

@@ -10,8 +10,8 @@ $rng.Dispose()
 $secret = ([BitConverter]::ToString($keyBytes)).Replace('-', '').ToLowerInvariant()
 $password = [Convert]::ToBase64String($passwordBytes)
 @"
-DUOYU_ADDR=127.0.0.1:8080
-DUOYU_ORIGIN=http://localhost:8080
+DUOYU_ADDR=0.0.0.0:5252
+DUOYU_ORIGIN=http://localhost:5252
 DATABASE_URL=postgres://duoyu:duoyu_dev_only@localhost:55432/duoyu?sslmode=disable
 DUOYU_DATA_DIR=./data
 DUOYU_ADMIN_EMAIL=2405824084@qq.com

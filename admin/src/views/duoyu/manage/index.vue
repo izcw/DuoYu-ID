@@ -1,5 +1,5 @@
 <template>
-  <div class="dy-page"
+  <div class="dy-page art-page-view"
     ><div class="dy-heading"
       ><div
         ><h1>{{ meta.title }}</h1
@@ -26,30 +26,57 @@
         :data="paged"
         v-loading="loading"
         empty-text="没有匹配的账号"
-        ><el-table-column label="账号" min-width="220"
+        ><el-table-column
+          type="index"
+          label="序号"
+          width="76"
+          :index="(index: number) => (page - 1) * 20 + index + 1"
+        /><el-table-column label="账号" min-width="220"
           ><template #default="{ row }"
             ><div style="display: flex; gap: 12px; align-items: center"
-              ><el-avatar :src="row.avatar || '/avatar-default.svg'" :size="36" /><div
+              ><el-avatar :src="row.avatar || '/avatar-default.svg'" :size="36"><img src="/avatar-default.svg" alt="默认头像" /></el-avatar><div
                 ><b>{{ row.name }}</b
+                ><span v-if="row.admin" class="dy-super-badge">超级管理员</span
+                ><div class="dy-code">ID {{ row.account_id }}</div
                 ><div class="dy-muted">{{ row.email }}</div></div
               ></div
             ></template
           ></el-table-column
-        ><el-table-column label="角色" width="110"
+        ><el-table-column label="关联项目" min-width="230"><template #default="{ row }"><div v-if="row.projects?.length" class="dy-account-projects"><el-tooltip v-for="project in row.projects" :key="project.id" :content="project.name + ' · ' + project.role_name" placement="top"><router-link class="dy-account-project-link" :to="{ path: '/manage/apps/edit', query: { id: project.id } }" :aria-label="'管理项目：' + project.name"><el-image :src="project.logo?.startsWith('/project-logos/') ? project.logo : '/project-default.svg'" fit="contain" :alt="project.name"><template #error><img src="/project-default.svg" alt="默认项目图标" /></template></el-image></router-link></el-tooltip></div><span v-else class="dy-muted">暂未关联项目</span></template></el-table-column
+        ><el-table-column label="角色" width="140"
           ><template #default="{ row }"
             ><el-tag :type="row.admin ? 'warning' : 'info'">{{
-              row.admin ? '管理员' : '用户'
+              row.admin ? '超级管理员' : '用户'
             }}</el-tag></template
           ></el-table-column
-        ><el-table-column label="状态" width="100"
+        ><el-table-column label="状态" width="120"
           ><template #default="{ row }"
-            ><el-tag :type="row.enabled ? 'success' : 'danger'">{{
-              row.enabled ? '正常' : '已停用'
-            }}</el-tag></template
+            ><el-tag
+              :type="
+                !row.enabled
+                  ? 'danger'
+                  : row.password_locked_until &&
+                      new Date(row.password_locked_until).getTime() > Date.now()
+                    ? 'warning'
+                    : 'success'
+              "
+              >{{
+                !row.enabled
+                  ? '已停用'
+                  : row.password_locked_until &&
+                      new Date(row.password_locked_until).getTime() > Date.now()
+                    ? '密码锁定'
+                    : '正常'
+              }}</el-tag
+            ></template
           ></el-table-column
         ><el-table-column label="注册时间" min-width="180"
           ><template #default="{ row }">{{ dateText(row.created_at) }}</template></el-table-column
-        ><el-table-column label="操作" width="220" fixed="right"
+        ><el-table-column
+          label="操作"
+          width="300"
+          :fixed="width >= 768 ? 'right' : false"
+          class-name="dy-actions"
           ><template #default="{ row }"
             ><el-button text @click="showDetail(row)">详情</el-button
             ><el-button text :disabled="row.admin" @click="toggleUser(row)">{{
@@ -64,10 +91,26 @@
         :data="paged"
         v-loading="loading"
         empty-text="还没有项目，点击右上角创建"
-        ><el-table-column label="接入项目" min-width="230"
+        ><el-table-column
+          type="index"
+          label="序号"
+          width="76"
+          :index="(index: number) => (page - 1) * 20 + index + 1"
+        /><el-table-column label="接入项目" min-width="230"
           ><template #default="{ row }"
-            ><b>{{ row.name }}</b
-            ><div class="dy-code">{{ row.id }}</div></template
+            ><div class="dy-project-identity"
+              ><el-image
+                :src="row.logo?.startsWith('/project-logos/') ? row.logo : '/project-default.svg'"
+                fit="contain"
+                class="dy-project-logo"
+                referrerpolicy="no-referrer"
+                ><template #error
+                  ><img src="/project-default.svg" alt="默认项目图标" /></template></el-image
+              ><div
+                ><b>{{ row.name }}</b
+                ><div class="dy-code">{{ row.id }}</div></div
+              ></div
+            ></template
           ></el-table-column
         ><el-table-column label="客户端类型" width="150"
           ><template #default="{ row }">{{
@@ -75,7 +118,7 @@
           }}</template></el-table-column
         ><el-table-column label="访问策略" width="120"
           ><template #default="{ row }">{{
-            row.restricted ? '指定账号' : '全部账号'
+            row.restricted ? '指定账号' : '开放准入'
           }}</template></el-table-column
         ><el-table-column label="状态" width="100"
           ><template #default="{ row }"
@@ -83,10 +126,19 @@
               row.enabled ? '启用' : '停用'
             }}</el-tag></template
           ></el-table-column
-        ><el-table-column label="操作" width="340" fixed="right"
+        ><el-table-column
+          label="操作"
+          width="560"
+          :fixed="width >= 768 ? 'right' : false"
+          class-name="dy-actions"
           ><template #default="{ row }"
             ><el-button text @click="edit(row)">配置</el-button
+            ><el-button text @click="router.push({ path: '/manage/apps/roles', query: { id: row.id } })">角色配置</el-button
             ><el-button text @click="grants(row)">准入名单</el-button
+            ><el-button
+              text
+              @click="router.push({ path: '/manage/apps/blacklist', query: { id: row.id } })"
+              >黑名单</el-button
             ><el-button text @click="showAppUsers(row)">登录用户</el-button
             ><el-button text :disabled="row.public" @click="rotate(row)"
               >轮换密钥</el-button
@@ -99,7 +151,12 @@
         :data="paged"
         v-loading="loading"
         empty-text="还没有 API 凭证"
-        ><el-table-column prop="name" label="凭证名称" min-width="160" /><el-table-column
+        ><el-table-column
+          type="index"
+          label="序号"
+          width="76"
+          :index="(index: number) => (page - 1) * 20 + index + 1"
+        /><el-table-column prop="name" label="凭证名称" min-width="160" /><el-table-column
           prop="app_name"
           label="所属项目"
           min-width="150"
@@ -132,7 +189,7 @@
           }}</template></el-table-column
         ><el-table-column label="最近调用" min-width="180"
           ><template #default="{ row }">{{ dateText(row.last_used_at) }}</template></el-table-column
-        ><el-table-column label="操作" width="140"
+        ><el-table-column label="操作" width="180" class-name="dy-actions"
           ><template #default="{ row }"
             ><el-button text :disabled="row.revoked" @click="edit(row)">编辑</el-button
             ><el-button text type="danger" :disabled="row.revoked" @click="revokeKey(row)"
@@ -142,7 +199,17 @@
         ></el-table
       >
       <el-table v-else :data="paged" v-loading="loading" empty-text="暂无日志"
-        ><el-table-column prop="request_id" label="请求标识" min-width="190" show-overflow-tooltip /><el-table-column prop="actor" label="操作账号" min-width="190" /><el-table-column
+        ><el-table-column
+          type="index"
+          label="序号"
+          width="76"
+          :index="(index: number) => (page - 1) * 20 + index + 1"
+        /><el-table-column
+          prop="request_id"
+          label="请求标识"
+          min-width="190"
+          show-overflow-tooltip
+        /><el-table-column prop="actor" label="操作账号" min-width="190" /><el-table-column
           prop="action"
           label="事件"
           min-width="190"
@@ -160,20 +227,22 @@
         ><el-table-column label="时间" min-width="180"
           ><template #default="{ row }">{{ dateText(row.created_at) }}</template></el-table-column
         ></el-table
-      ></section
-    >
-    <el-pagination
-      v-model:current-page="page"
-      :page-size="20"
-      :total="total"
-      layout="total, prev, pager, next"
-      style="justify-content: flex-end"
-    />
+      >
+      <el-pagination
+        v-if="total > 20"
+        v-model:current-page="page"
+        :page-size="20"
+        :total="total"
+        layout="total, prev, pager, next"
+        style="justify-content: flex-end"
+    /></section>
   </div>
 </template>
 <script setup lang="ts">
   import { ref, computed, watch, onBeforeUnmount } from 'vue'
   import { useRoute, useRouter } from 'vue-router'
+  import { useWindowSize } from '@vueuse/core'
+  const { width } = useWindowSize()
   import { ElMessage, ElMessageBox } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
   import { api, dateText } from '@/api/duoyu'
@@ -232,6 +301,8 @@
       if (current === generation) {
         rows.value = result.items
         total.value = result.total
+        if (page.value > Math.max(1, Math.ceil(total.value / 20)))
+          page.value = Math.max(1, Math.ceil(total.value / 20))
       }
     } catch (e: any) {
       if (current === generation && e.name !== 'AbortError') error.value = e.message
@@ -278,3 +349,12 @@
   const revokeKey = (r: any) =>
     confirmed('撤销后不可恢复，确定撤销此凭证？', () => api('/api/admin/keys/' + r.id, 'DELETE'))
 </script>
+
+<style scoped>
+  :deep(.dy-actions .cell) {
+    white-space: nowrap;
+  }
+  :deep(.dy-actions .el-button + .el-button) {
+    margin-left: 8px;
+  }
+</style>

@@ -67,7 +67,7 @@ func (s *Server) avatar(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "保存失败")
 		return
 	}
-	avatar := s.origin + "/avatars/" + id
+	avatar := "/avatars/" + id
 	if _, e = s.db.Exec(r.Context(), "UPDATE users SET avatar=$1 WHERE id=$2", avatar, u.ID); e != nil {
 		os.Remove(p)
 		fail(w, 500, "保存失败")

@@ -30,7 +30,7 @@ func (s *Server) TokenRequestByRefreshToken(ctx context.Context, token string) (
 		return nil, op.ErrInvalidRefreshToken
 	}
 	r := new(refreshRequest)
-	if json.Unmarshal(body, &r.Auth) != nil || !s.allowed(ctx, r.Auth.UserID, r.Auth.GetClientID()) {
+	if json.Unmarshal(body, &r.Auth) != nil || (!s.allowed(ctx, r.Auth.UserID, r.Auth.GetClientID()) || !s.loginAMRAllowed(ctx, r.Auth.GetClientID(), r.Auth.AMR)) {
 		return nil, op.ErrInvalidRefreshToken
 	}
 	return r, nil
@@ -57,7 +57,7 @@ func (s *Server) CreateAccessAndRefreshTokens(ctx context.Context, request op.To
 		return "", "", time.Time{}, invalid
 	}
 	app, err := s.app(ctx, a.GetClientID())
-	if err != nil || !app.RefreshEnabled || !s.allowed(ctx, a.UserID, a.GetClientID()) || a.SessionHash == "" {
+	if err != nil || !app.RefreshEnabled || !s.loginAMRAllowed(ctx, a.GetClientID(), a.AMR) || !s.allowed(ctx, a.UserID, a.GetClientID()) || a.SessionHash == "" {
 		return "", "", time.Time{}, invalid
 	}
 	tx, err := s.db.Begin(ctx)

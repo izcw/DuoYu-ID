@@ -1,5 +1,5 @@
 <template>
-  <div class="dy-page" v-loading="loading">
+  <div class="dy-page art-page-view" v-loading="loading">
     <div class="dy-heading"
       ><div
         ><h1>欢迎回来，{{ user.info.userName }}</h1

@@ -19,5 +19,5 @@ WORKDIR /app
 COPY --from=backend /duoyu /app/duoyu
 COPY --from=web /src/admin/dist /app/admin/dist
 USER duoyu
-EXPOSE 8080
+EXPOSE 5252
 CMD ["/app/duoyu"]

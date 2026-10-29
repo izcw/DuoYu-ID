@@ -82,6 +82,12 @@ export const routeModules: AppRouteRecord[] = [
         }
       },
       {
+        path: '/manage/apps/blacklist',
+        name: 'DuoyuBlacklist',
+        component: '/duoyu/editor',
+        meta: { title: '项目黑名单', icon: '', isHide: true, activePath: '/manage/apps' }
+      },
+      {
         path: '/manage/apps/grants',
         name: 'DuoyuEditor1',
         component: '/duoyu/editor',
@@ -207,6 +213,14 @@ routeModules[0].children!.push({
   meta: { title: '管理权限', isHide: true, activePath: '/manage/users', roles: ['R_SUPER'] }
 })
 const integrations = routeModules.find((r) => r.name === 'Integrations')!
+integrations.children!.push(...[
+ {path:'/manage/project-api',name:'DuoyuProjectAPI',component:'/duoyu/project-api',meta:{title:'项目管理 API',icon:'ri:key-2-line',roles:['R_SUPER']}},
+ {path:'/manage/project-api/new',name:'DuoyuProjectAPINew',component:'/duoyu/project-api',meta:{title:'创建管理凭证',isHide:true,activePath:'/manage/project-api',roles:['R_SUPER']}},
+ {path:'/manage/apps/roles',name:'DuoyuProjectRoles',component:'/duoyu/project-roles',meta:{title:'项目角色',isHide:true,activePath:'/manage/apps'}},
+ {path:'/manage/apps/roles/edit',name:'DuoyuProjectRoleEdit',component:'/duoyu/project-roles',meta:{title:'编辑项目角色',isHide:true,activePath:'/manage/apps'}},
+ {path:'/manage/apps/member-role',name:'DuoyuProjectMemberRole',component:'/duoyu/project-roles',meta:{title:'用户项目角色',isHide:true,activePath:'/manage/apps'}}
+])
+
 integrations.meta.roles = ['R_SUPER', 'R_MAINTAINER']
 for (const child of integrations.children || [])
   child.meta.roles = [

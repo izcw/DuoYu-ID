@@ -45,7 +45,7 @@ func (s *Server) sendMail(to, code, purpose string) error {
 	if e != nil {
 		return e
 	}
-	return s.enqueueAuth(MailMessage{To: to, Subject: "【多鱼账号】" + purposeTitle(purpose), Text: fmt.Sprintf("多鱼账号 Duoyu ID\r\n%s\r\n验证码：%s\r\n5 分钟内有效，请勿向他人透露。如果不是你的操作，请忽略。", purposeTitle(purpose), code), HTML: html}, to, purpose, code)
+	return s.enqueueAuth(MailMessage{To: to, Subject: "【多鱼账号】" + purposeTitle(purpose), Text: fmt.Sprintf("多鱼账号 DuoYu ID\r\n%s\r\n验证码：%s\r\n5 分钟内有效，请勿向他人透露。如果不是你的操作，请忽略。", purposeTitle(purpose), code), HTML: html}, to, purpose, code)
 }
 
 type MailMessage struct{ To, Subject, Text, HTML string }

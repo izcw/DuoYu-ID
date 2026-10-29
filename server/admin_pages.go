@@ -11,13 +11,13 @@ func (s *Server) adminAppDetail(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, "SELECT id,name,description,redirects,logout_redirects,public,enabled,restricted,created_at,platform,refresh_enabled,backchannel_logout_uri FROM apps WHERE id=$1", r.PathValue("id"))
+	s.queryList(w, r, "SELECT id,name,description,redirects,logout_redirects,public,enabled,restricted,created_at,platform,refresh_enabled,backchannel_logout_uri,logo,allowed_origins,login_methods FROM apps WHERE id=$1", r.PathValue("id"))
 }
 func (s *Server) adminUserDetail(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, "SELECT id,email,name,avatar,admin,enabled,created_at FROM users WHERE id=$1", r.PathValue("id"))
+	s.queryList(w, r, "SELECT id,account_id,email,name,avatar,admin,enabled,created_at,password_locked_until,password_lock_level,"+accountProjectsSQL+" AS projects FROM users WHERE id=$1", r.PathValue("id"))
 }
 func (s *Server) adminKeyDetail(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
@@ -179,3 +179,7 @@ func (s *Server) appChecks(w http.ResponseWriter, r *http.Request) {
 	}
 	ok(w, map[string]any{"last_logout_failure_id": failureID, "checks": checks, "note": "仅校验保存的配置，不代表回调网络可达或项目验签通过。"})
 }
+
+// A central account can belong to multiple projects. Membership reflects a
+// successful project authorization, not exclusive ownership or a login grant.
+const accountProjectsSQL = `COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'name',a.name,'logo',a.logo,'role_name',ar.name,'role_key',ar.role_key) ORDER BY a.name,a.id) FROM app_users au JOIN apps a ON a.id=au.app_id JOIN app_roles ar ON ar.app_id=au.app_id AND ar.id=au.role_id WHERE au.user_id=users.id),'[]'::jsonb)`

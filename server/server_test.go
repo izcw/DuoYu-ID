@@ -88,8 +88,16 @@ func TestIntegration(t *testing.T) {
 	srv.Listener = listener
 	srv.Start()
 	defer srv.Close()
+	t.Run("Project blacklist", func(t *testing.T) { testProjectBlacklist(t, s, origin) })
+	t.Run("Account password policy and numeric IDs", func(t *testing.T) { testAccountPolicy(t, s) })
 	t.Run("QR login ownership and single use", func(t *testing.T) { testQRLogin(t, s, origin) })
 	t.Run("Project mail isolation and idempotency", func(t *testing.T) { testProjectMail(t, s, origin) })
+	t.Run("Discovery, origins and protocol faults", func(t *testing.T) { testProtocolContract(t, s, origin) })
+	t.Run("Authenticator enrollment and login", func(t *testing.T) { testAuthenticator(t, s, origin) })
+	t.Run("Account projects and avatars", func(t *testing.T) { testAccountProjects(t, s, origin) })
+	t.Run("Management API", func(t *testing.T) { testManagementAPI(t, s, origin) })
+	t.Run("Project roles", func(t *testing.T) { testProjectRoles(t, s, origin) })
+	t.Run("Project login methods", func(t *testing.T) { testLoginMethods(t, s, origin) })
 	t.Run("Queue recovery and migrations", func(t *testing.T) { testMailQueue(t, s) })
 	t.Run("Multi-client protocol matrix", func(t *testing.T) { testClientMatrix(t, s, origin) })
 	jar, _ := cookiejar.New(nil)
@@ -155,11 +163,23 @@ func TestIntegration(t *testing.T) {
 	}
 	status, out = request("GET", "/api/admin/overview", nil)
 	assertStatus(200, status, out)
+
+	for _, logo := range []string{"", "/project-logos/" + strings.Repeat("a", 43) + ".png", "https://images.example.com/logo.png", "javascript:alert(1)", "data:image/png;base64,abc", "https://user:password@example.com/logo.png", "http://example.com/logo.png"} {
+		status, out = request("POST", "/api/admin/apps", map[string]any{"name": "Invalid logo", "logo": logo, "public": true, "enabled": true, "redirects": []string{"http://localhost:8091/callback"}})
+		assertStatus(400, status, out)
+	}
+	logo := testUploadProjectLogo(t, client, origin)
 	var apps []string
 	for _, name := range []string{"笔记项目", "记账项目"} {
-		status, out = request("POST", "/api/admin/apps", map[string]any{"name": name, "public": true, "enabled": true, "redirects": []string{"http://localhost:8091/callback"}, "logout_redirects": []string{}})
+		status, out = request("POST", "/api/admin/apps", map[string]any{"name": name, "logo": logo, "public": true, "enabled": true, "redirects": []string{"http://localhost:8091/callback"}, "logout_redirects": []string{}})
 		assertStatus(200, status, out)
 		apps = append(apps, out["data"].(map[string]any)["id"].(string))
+	}
+
+	status, out = request("GET", "/api/admin/apps/"+apps[0], nil)
+	assertStatus(200, status, out)
+	if out["data"].([]any)[0].(map[string]any)["logo"] != logo {
+		t.Fatal("project logo not saved")
 	}
 	status, out = request("POST", "/api/admin/keys", map[string]any{"name": "test read key", "app_id": apps[0], "days": 1})
 	assertStatus(200, status, out)
@@ -347,6 +367,20 @@ func TestIntegration(t *testing.T) {
 	s.db.QueryRow(ctx, "SELECT count(*) FROM users WHERE email IN ('closed@example.com','unverified@example.com')").Scan(&unwanted)
 	if unwanted != 0 {
 		t.Fatal("unverified or closed registration created an account")
+	}
+
+	code("random-password@example.com", "login")
+	status, out = request("POST", "/api/auth/login", map[string]any{"email": "random-password@example.com", "mode": "code", "code": "123456"})
+	assertStatus(200, status, out)
+	var initialHash, nextHash string
+	if err := s.db.QueryRow(ctx, "SELECT password_hash FROM users WHERE email='random-password@example.com'").Scan(&initialHash); err != nil || !strings.HasPrefix(initialHash, "a2$") {
+		t.Fatal("registration password hash missing")
+	}
+	code("random-password@example.com", "login")
+	status, out = request("POST", "/api/auth/login", map[string]any{"email": "random-password@example.com", "mode": "code", "code": "123456"})
+	assertStatus(200, status, out)
+	if err := s.db.QueryRow(ctx, "SELECT password_hash FROM users WHERE email='random-password@example.com'").Scan(&nextHash); err != nil || initialHash != nextHash {
+		t.Fatal("OTP login replaced existing password")
 	}
 	// Disabling a user invalidates UserInfo even if its opaque token has time left.
 	s.db.Exec(ctx, "UPDATE users SET enabled=false WHERE id=$1", uid)
