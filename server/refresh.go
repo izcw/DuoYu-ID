@@ -25,7 +25,7 @@ func (s *Server) TokenRequestByRefreshToken(ctx context.Context, token string) (
 	var body []byte
 	// Used tokens remain readable until client authorization is checked by the
 	// provider. Replay is acted on inside the locked rotation transaction.
-	err := s.db.QueryRow(ctx, `SELECT t.body FROM refresh_tokens t JOIN refresh_families f ON f.id=t.family_id JOIN sessions ss ON ss.hash=f.session_hash WHERE t.hash=$1 AND NOT f.revoked AND f.expires_at>now() AND ss.expires_at>now()`, digest(token)).Scan(&body)
+	err := s.db.QueryRow(ctx, `SELECT t.body FROM refresh_tokens t JOIN refresh_families f ON f.id=t.family_id JOIN sessions ss ON ss.hash=f.session_hash WHERE t.hash=$1 AND NOT f.revoked AND f.expires_at>now() AND (ss.expires_at>now() OR f.expires_at='infinity'::timestamptz)`, digest(token)).Scan(&body)
 	if err != nil {
 		return nil, op.ErrInvalidRefreshToken
 	}
@@ -67,8 +67,8 @@ func (s *Server) CreateAccessAndRefreshTokens(ctx context.Context, request op.To
 	defer tx.Rollback(ctx)
 	family := randomID()
 	if current == "" {
-		// Absolute lifetime is the existing center session; refresh never extends it.
-		tag, e := tx.Exec(ctx, `INSERT INTO refresh_families(id,user_id,app_id,session_hash,expires_at) SELECT $1,$2,$3,hash,expires_at FROM sessions WHERE hash=$4 AND user_id=$2 AND expires_at>now()`, family, a.UserID, a.GetClientID(), a.SessionHash)
+		// Extension grants survive center-cookie expiry, but remain bound to session revocation.
+		tag, e := tx.Exec(ctx, `INSERT INTO refresh_families(id,user_id,app_id,session_hash,expires_at) SELECT $1,$2,$3,hash,CASE WHEN $5 THEN 'infinity'::timestamptz ELSE expires_at END FROM sessions WHERE hash=$4 AND user_id=$2 AND expires_at>now()`, family, a.UserID, a.GetClientID(), a.SessionHash, app.Platform == "extension")
 		if e != nil {
 			return "", "", time.Time{}, e
 		}
@@ -77,10 +77,10 @@ func (s *Server) CreateAccessAndRefreshTokens(ctx context.Context, request op.To
 		}
 	} else {
 		var used, revoked bool
-		var expiry time.Time
+		var expired bool
 		var client, uid string
-		err = tx.QueryRow(ctx, `SELECT f.id,t.used,f.revoked,f.expires_at,f.app_id,f.user_id FROM refresh_tokens t JOIN refresh_families f ON f.id=t.family_id WHERE t.hash=$1 FOR UPDATE OF f,t`, digest(current)).Scan(&family, &used, &revoked, &expiry, &client, &uid)
-		if err != nil || revoked || time.Now().After(expiry) || client != a.GetClientID() || uid != a.UserID {
+		err = tx.QueryRow(ctx, `SELECT f.id,t.used,f.revoked,f.expires_at<=now(),f.app_id,f.user_id FROM refresh_tokens t JOIN refresh_families f ON f.id=t.family_id WHERE t.hash=$1 FOR UPDATE OF f,t`, digest(current)).Scan(&family, &used, &revoked, &expired, &client, &uid)
+		if err != nil || revoked || expired || client != a.GetClientID() || uid != a.UserID {
 			return "", "", time.Time{}, invalid
 		}
 		if used {

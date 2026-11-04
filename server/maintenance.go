@@ -12,7 +12,7 @@ func (s *Server) cleanupExpired(ctx context.Context) error {
 	for _, q := range []string{
 		"UPDATE management_create_requests SET result_cipher=NULL WHERE result_cipher IS NOT NULL AND created_at<now()-interval '24 hours'",
 		"DELETE FROM authenticators WHERE user_id IN(SELECT user_id FROM authenticators WHERE NOT active AND expires_at<now() LIMIT 500)",
-		"DELETE FROM sessions WHERE hash IN(SELECT hash FROM sessions WHERE expires_at<now() LIMIT 500)",
+		"DELETE FROM sessions WHERE hash IN(SELECT hash FROM sessions WHERE expires_at<now() AND NOT EXISTS(SELECT 1 FROM refresh_families f WHERE f.session_hash=sessions.hash AND NOT f.revoked AND f.expires_at>now()) LIMIT 500)",
 		"DELETE FROM auth_requests WHERE id IN(SELECT id FROM auth_requests WHERE expires_at<now() LIMIT 500)",
 		"DELETE FROM webauthn_challenges WHERE id IN(SELECT id FROM webauthn_challenges WHERE expires_at<now() LIMIT 500)",
 		"DELETE FROM challenges WHERE (email,purpose) IN(SELECT email,purpose FROM challenges WHERE expires_at<now()-interval '1 day' LIMIT 500)",

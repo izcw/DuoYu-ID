@@ -323,7 +323,7 @@ func (s *Server) token(ctx context.Context, id, subject string) (string, []strin
 	var scopes []string
 	var amr string
 	var expires time.Time
-	e := s.db.QueryRow(ctx, "SELECT app_id,scopes,expires_at,COALESCE((SELECT amr FROM sessions WHERE hash=session_hash),'') FROM access_tokens WHERE id=$1 AND user_id=$2 AND expires_at>now() AND (session_hash IS NULL OR EXISTS(SELECT 1 FROM sessions WHERE hash=session_hash AND expires_at>now()))", id, subject).Scan(&app, &scopes, &expires, &amr)
+	e := s.db.QueryRow(ctx, "SELECT app_id,scopes,expires_at,COALESCE((SELECT amr FROM sessions WHERE hash=session_hash),'') FROM access_tokens WHERE id=$1 AND user_id=$2 AND expires_at>now() AND (session_hash IS NULL OR EXISTS(SELECT 1 FROM sessions WHERE hash=session_hash AND (expires_at>now() OR EXISTS(SELECT 1 FROM refresh_families f WHERE f.id=access_tokens.family_id AND NOT f.revoked AND f.expires_at='infinity'::timestamptz))))", id, subject).Scan(&app, &scopes, &expires, &amr)
 	var revoked bool
 	if e == nil {
 		e = s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM refresh_families f JOIN access_tokens t ON t.family_id=f.id WHERE t.id=$1 AND f.revoked)", id).Scan(&revoked)

@@ -464,7 +464,30 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		if (first == 200) == (second == 200) {
 			t.Fatal("concurrent refresh must have exactly one success", first, second)
 		}
+		// Extension grants have no time limit, even after center-cookie expiry
+		// and maintenance; explicit logout still revokes the entire grant.
+		if _, err := s.db.Exec(ctx, "UPDATE apps SET platform='extension' WHERE id=$1", pub); err != nil {
+			t.Fatal(err)
+		}
+		defer s.db.Exec(ctx, "UPDATE apps SET platform='web' WHERE id=$1", pub)
 		out = issue()
+		var permanent bool
+		if err := s.db.QueryRow(ctx, "SELECT f.expires_at='infinity'::timestamptz FROM refresh_families f JOIN refresh_tokens t ON t.family_id=f.id WHERE t.hash=$1", digest(out["refresh_token"].(string))).Scan(&permanent); err != nil || !permanent {
+			t.Fatal("extension grant must be permanent", err)
+		}
+		if _, err := s.db.Exec(ctx, "UPDATE sessions SET expires_at=now()-interval '1 day' WHERE user_id=$1", uid); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.cleanupExpired(ctx); err != nil {
+			t.Fatal(err)
+		}
+		status, out = refresh(out["refresh_token"].(string), pub, "")
+		if status != 200 {
+			t.Fatal("extension refresh expired with center session", status)
+		}
+		if status, _ := info(out["access_token"].(string)); status != 200 {
+			t.Fatal("permanent grant access rejected", status)
+		}
 		request(browser, "POST", "/api/auth/logout", map[string]string{})
 		if status, _ := info(out["access_token"].(string)); status == 200 {
 			t.Fatal("access survived logout")
