@@ -60,9 +60,7 @@ func (s *Server) saveAppRole(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(ctx)
 	app, id := r.PathValue("id"), r.PathValue("role")
-	var exists string
-	if err = tx.QueryRow(ctx, "SELECT id FROM apps WHERE id=$1 FOR UPDATE", app).Scan(&exists); err != nil {
-		fail(w, 404, "项目不存在")
+	if !lockPolicyProject(w, ctx, tx, app) {
 		return
 	}
 	if id != "" {
@@ -136,8 +134,7 @@ func (s *Server) deleteAppRole(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(ctx)
 	var key string
-	if err = tx.QueryRow(ctx, "SELECT id FROM apps WHERE id=$1 FOR UPDATE", app).Scan(&key); err != nil {
-		fail(w, 404, "项目不存在")
+	if !lockPolicyProject(w, ctx, tx, app) {
 		return
 	}
 	var wasDefault bool

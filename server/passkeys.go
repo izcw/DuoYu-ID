@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/jackc/pgx/v5"
 )
 
 type passkeyUser struct {
@@ -84,33 +85,62 @@ func (s *Server) listPasskeys(w http.ResponseWriter, r *http.Request) {
 	}
 	ok(w, out)
 }
-func (s *Server) storeWA(w http.ResponseWriter, r *http.Request, uid, purpose string, data *webauthn.SessionData, qrEnrollment ...bool) error {
-	qrEnabled := len(qrEnrollment) > 0 && qrEnrollment[0]
+func (s *Server) storeWA(w http.ResponseWriter, r *http.Request, u *User, code, purpose string, data *webauthn.SessionData, qrEnabled bool) bool {
 	id := randomID()
 	b, e := json.Marshal(data)
 	if e != nil {
-		return e
+		fail(w, 500, "无法创建验证请求")
+		return false
 	}
-	_, e = s.db.Exec(r.Context(), "INSERT INTO webauthn_challenges(id,user_id,purpose,data,expires_at,qr_enabled) VALUES($1,$2,$3,$4,$5,$6)", digest(id), uid, purpose, b, time.Now().Add(5*time.Minute), qrEnabled)
-	if e == nil {
-		s.cookie(w, "duoyu_webauthn", id, 300)
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		fail(w, 503, "无法创建验证请求")
+		return false
 	}
-	return e
+	defer tx.Rollback(r.Context())
+	uid := ""
+	if u != nil {
+		uid = u.ID
+		if !s.authorizeChange(w, r.Context(), tx, "login", emailCode{u.Email, code}) || !lockCredentialSession(w, r, tx, *u) {
+			return false
+		}
+		cookie, _ := r.Cookie("duoyu_session")
+		purpose += ":" + digest(cookie.Value)
+	}
+	_, e = tx.Exec(r.Context(), "INSERT INTO webauthn_challenges(id,user_id,purpose,data,expires_at,qr_enabled) VALUES($1,$2,$3,$4,$5,$6)", digest(id), uid, purpose, b, time.Now().Add(5*time.Minute), qrEnabled)
+	if e != nil || tx.Commit(r.Context()) != nil {
+		fail(w, 503, "无法保存验证请求")
+		return false
+	}
+	s.cookie(w, "duoyu_webauthn", id, 300)
+	return true
 }
-func (s *Server) takeWA(w http.ResponseWriter, r *http.Request, uid, purpose string) (webauthn.SessionData, error) {
+func (s *Server) takeWA(w http.ResponseWriter, r *http.Request, uid, purpose string) (webauthn.SessionData, bool, error) {
 	var data webauthn.SessionData
 	c, e := r.Cookie("duoyu_webauthn")
 	if e != nil {
-		return data, e
+		return data, false, e
 	}
 	var b []byte
-	e = s.db.QueryRow(r.Context(), "DELETE FROM webauthn_challenges WHERE id=$1 AND user_id=$2 AND purpose=$3 AND expires_at>now() RETURNING data", digest(c.Value), uid, purpose).Scan(&b)
-	s.cookie(w, "duoyu_webauthn", "", -1)
+	bound := purpose
+	if purpose == "register" {
+		session, e := r.Cookie("duoyu_session")
+		if e != nil {
+			return data, false, e
+		}
+		bound += ":" + digest(session.Value)
+	}
+	var qrEnabled bool
+	// The plain registration purpose covers unexpired requests from the prior release.
+	e = s.db.QueryRow(r.Context(), "DELETE FROM webauthn_challenges WHERE id=$1 AND user_id=$2 AND purpose IN ($3,$4) AND expires_at>now() RETURNING data,qr_enabled", digest(c.Value), uid, purpose, bound).Scan(&b, &qrEnabled)
+	if e == nil || errors.Is(e, pgx.ErrNoRows) {
+		s.cookie(w, "duoyu_webauthn", "", -1)
+	}
 	if e != nil {
-		return data, e
+		return data, false, e
 	}
 	e = json.Unmarshal(b, &data)
-	return data, e
+	return data, qrEnabled, e
 }
 func (s *Server) beginPasskey(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWebAuthn(w) {
@@ -124,18 +154,25 @@ func (s *Server) beginPasskey(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 		QR   bool   `json:"qr"`
 	}
-	if decode(r, &in) != nil || !s.consumeCode(r.Context(), u.Email, "login", in.Code) {
+	if decode(r, &in) != nil {
 		fail(w, 400, "请先验证邮箱验证码")
 		return
 	}
 	p, e := s.passkeyUser(r.Context(), u.ID)
-	if e != nil || len(p.Credentials) >= 10 {
+	if e != nil {
+		fail(w, 503, "通行密钥暂不可读取")
+		return
+	}
+	if len(p.Credentials) >= 10 {
 		fail(w, 400, "无法创建，最多绑定 10 个通行密钥")
 		return
 	}
 	options, data, e := s.wa.BeginRegistration(p, webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired), webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{ResidentKey: protocol.ResidentKeyRequirementRequired, UserVerification: protocol.VerificationRequired}))
-	if e != nil || s.storeWA(w, r, u.ID, "register", data, in.QR) != nil {
+	if e != nil {
 		fail(w, 500, "无法创建注册请求")
+		return
+	}
+	if !s.storeWA(w, r, &u, in.Code, "register", data, in.QR) {
 		return
 	}
 	ok(w, options)
@@ -148,16 +185,9 @@ func (s *Server) finishPasskey(w http.ResponseWriter, r *http.Request) {
 	if !yes {
 		return
 	}
-	var qrEnabled bool
-	if cookie, err := r.Cookie("duoyu_webauthn"); err == nil {
-		if err = s.db.QueryRow(r.Context(), "SELECT qr_enabled FROM webauthn_challenges WHERE id=$1 AND user_id=$2 AND purpose='register'", digest(cookie.Value), u.ID).Scan(&qrEnabled); err != nil {
-			fail(w, 400, "请求已过期")
-			return
-		}
-	}
-	data, e := s.takeWA(w, r, u.ID, "register")
+	data, qrEnabled, e := s.takeWA(w, r, u.ID, "register")
 	if e != nil {
-		fail(w, 400, "请求已过期")
+		waChallengeFailure(w, e)
 		return
 	}
 	p, e := s.passkeyUser(r.Context(), u.ID)
@@ -170,10 +200,33 @@ func (s *Server) finishPasskey(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "通行密钥验证失败")
 		return
 	}
-	b, _ := json.Marshal(c)
-	_, e = s.db.Exec(r.Context(), "INSERT INTO passkeys(id,user_id,name,credential,registration_device,qr_enabled) VALUES($1,$2,$3,$4,$5,$6)", base64.RawURLEncoding.EncodeToString(c.ID), u.ID, "通行密钥 · "+time.Now().Format("2006-01-02"), b, registrationDevice(r.UserAgent()), qrEnabled)
+	b, e := json.Marshal(c)
 	if e != nil {
-		fail(w, 409, "密钥已存在或保存失败")
+		fail(w, 500, "密钥保存失败")
+		return
+	}
+	tx, e := s.db.Begin(r.Context())
+	if e != nil {
+		fail(w, 503, "密钥保存失败")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if !lockCredentialSession(w, r, tx, u) {
+		return
+	}
+	tag, e := tx.Exec(r.Context(), `INSERT INTO passkeys(id,user_id,name,credential,registration_device,qr_enabled)
+		SELECT $1,$2,$3,$4,$5,$6 WHERE (SELECT count(*) FROM passkeys WHERE user_id=$2)<10
+		ON CONFLICT(id) DO NOTHING`, base64.RawURLEncoding.EncodeToString(c.ID), u.ID, "通行密钥 · "+time.Now().Format("2006-01-02"), b, registrationDevice(r.UserAgent()), qrEnabled)
+	if e != nil {
+		fail(w, 503, "密钥保存失败")
+		return
+	}
+	if tag.RowsAffected() != 1 {
+		fail(w, 409, "密钥已存在或已达到 10 个上限")
+		return
+	}
+	if tx.Commit(r.Context()) != nil {
+		fail(w, 503, "密钥保存失败")
 		return
 	}
 	s.audit(r.Context(), u.ID, "passkey.added", "", true)
@@ -187,12 +240,30 @@ func (s *Server) deletePasskey(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Code string `json:"code"`
 	}
-	if decode(r, &in) != nil || !s.consumeCode(r.Context(), u.Email, "login", in.Code) {
+	if decode(r, &in) != nil {
 		fail(w, 400, "请先验证邮箱验证码")
 		return
 	}
-	if _, e := s.db.Exec(r.Context(), "DELETE FROM passkeys WHERE id=$1 AND user_id=$2", r.PathValue("id"), u.ID); e != nil {
+	tx, e := s.db.Begin(r.Context())
+	if e != nil {
+		fail(w, 503, "删除暂不可用")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if !s.authorizeChange(w, r.Context(), tx, "login", emailCode{u.Email, in.Code}) || !lockCredentialSession(w, r, tx, u) {
+		return
+	}
+	tag, e := tx.Exec(r.Context(), "DELETE FROM passkeys WHERE id=$1 AND user_id=$2", r.PathValue("id"), u.ID)
+	if e != nil {
 		fail(w, 500, "删除失败")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		ok(w, nil)
+		return
+	} // Idempotent; preserve the unused proof.
+	if tx.Commit(r.Context()) != nil {
+		fail(w, 503, "删除失败")
 		return
 	}
 	s.audit(r.Context(), u.ID, "passkey.deleted", "", true)
@@ -214,8 +285,11 @@ func (s *Server) beginPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	options, data, e := s.wa.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
-	if e != nil || s.storeWA(w, r, "", purpose, data) != nil {
+	if e != nil {
 		fail(w, 500, "无法创建登录请求")
+		return
+	}
+	if !s.storeWA(w, r, nil, "", purpose, data, false) {
 		return
 	}
 	ok(w, options)
@@ -231,40 +305,73 @@ func (s *Server) finishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.checkProjectMethod(w, r, "", method) {
 		return
 	}
-	data, e := s.takeWA(w, r, "", purpose)
+	data, _, e := s.takeWA(w, r, "", purpose)
 	if e != nil {
-		fail(w, 400, "登录请求已过期")
+		waChallengeFailure(w, e)
 		return
 	}
+	parsed, e := protocol.ParseCredentialRequestResponse(r)
+	if e != nil {
+		fail(w, 401, "通行密钥验证失败")
+		return
+	}
+	tx, e := s.db.Begin(r.Context())
+	if e != nil {
+		fail(w, 503, "通行密钥登录暂不可用")
+		return
+	}
+	defer tx.Rollback(r.Context())
 	var logged passkeyUser
-	c, e := s.wa.FinishDiscoverableLogin(func(rawID, userHandle []byte) (webauthn.User, error) {
-		p, e := s.passkeyUser(r.Context(), string(userHandle))
-		if e != nil {
-			return nil, errors.New("invalid user")
+	var lookupErr error
+	c, e := s.wa.ValidateDiscoverableLogin(func(rawID, userHandle []byte) (webauthn.User, error) {
+		var body []byte
+		lookupErr = tx.QueryRow(r.Context(), `SELECT u.id,u.email,u.name,p.credential FROM users u JOIN passkeys p ON p.user_id=u.id
+			WHERE u.id=$1 AND u.enabled AND p.id=$2 AND (NOT $3 OR p.qr_enabled)
+			FOR SHARE OF u FOR UPDATE OF p`, string(userHandle), base64.RawURLEncoding.EncodeToString(rawID), method == "qr").Scan(&logged.ID, &logged.Email, &logged.Name, &body)
+		if lookupErr != nil {
+			return nil, lookupErr
 		}
-		logged = p
-		return p, nil
-	}, data, r)
+		var credential webauthn.Credential
+		if lookupErr = json.Unmarshal(body, &credential); lookupErr != nil {
+			return nil, lookupErr
+		}
+		logged.Credentials = []webauthn.Credential{credential}
+		return logged, nil
+	}, data, parsed)
+	if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+		fail(w, 503, "通行密钥暂不可读取")
+		return
+	}
 	if e != nil || c.Authenticator.CloneWarning {
 		fail(w, 401, "通行密钥验证失败")
 		return
 	}
-	b, _ := json.Marshal(c)
-	tag, e := s.db.Exec(r.Context(), "UPDATE passkeys SET credential=$1 WHERE id=$2 AND user_id=$3 AND ($4=false OR qr_enabled)", b, base64.RawURLEncoding.EncodeToString(c.ID), logged.ID, method == "qr")
-	if e != nil || tag.RowsAffected() != 1 {
-		fail(w, 401, "密钥已撤销")
+	b, e := json.Marshal(c)
+	if e == nil {
+		_, e = tx.Exec(r.Context(), "UPDATE passkeys SET credential=$1 WHERE id=$2 AND user_id=$3", b, base64.RawURLEncoding.EncodeToString(c.ID), logged.ID)
+	}
+	if e != nil {
+		fail(w, 503, "密钥状态保存失败")
 		return
 	}
 	amr := "hwk user"
 	if method == "qr" {
 		amr = "hwk user qr"
 	}
-	if s.newSession(w, r, logged.ID, amr, base64.RawURLEncoding.EncodeToString(c.ID)) != nil {
+	if s.commitLoginSession(w, r, tx, logged.ID, amr, base64.RawURLEncoding.EncodeToString(c.ID)) != nil {
 		fail(w, 500, "创建会话失败")
 		return
 	}
 	s.audit(r.Context(), logged.ID, "login.success", "passkey", true)
 	ok(w, nil)
+}
+
+func waChallengeFailure(w http.ResponseWriter, err error) {
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, http.ErrNoCookie) {
+		fail(w, 400, "验证请求已过期")
+		return
+	}
+	fail(w, 503, "暂时无法读取验证请求")
 }
 
 func (s *Server) requireWebAuthn(w http.ResponseWriter) bool {

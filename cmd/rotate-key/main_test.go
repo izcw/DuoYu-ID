@@ -39,3 +39,26 @@ func TestRotationPreservesVerification(t *testing.T) {
 		t.Fatal("wrong archived key")
 	}
 }
+
+func TestRotationReservation(t *testing.T) {
+	dir := t.TempDir()
+	reserved := filepath.Join(dir, "signing.pem.next")
+	if err := os.WriteFile(reserved, []byte("another rotation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rotate(dir); !os.IsExist(err) {
+		t.Fatalf("rotation must reserve the destination before reading the current key: %v", err)
+	}
+	if got, err := os.ReadFile(reserved); err != nil || string(got) != "another rotation" {
+		t.Fatal("existing reservation was modified")
+	}
+	if err := os.Remove(reserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := rotate(dir); !os.IsNotExist(err) {
+		t.Fatalf("missing signing key: %v", err)
+	}
+	if _, err := os.Stat(reserved); !os.IsNotExist(err) {
+		t.Fatal("failed rotation left a reservation")
+	}
+}

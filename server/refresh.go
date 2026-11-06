@@ -56,8 +56,7 @@ func (s *Server) CreateAccessAndRefreshTokens(ctx context.Context, request op.To
 	default:
 		return "", "", time.Time{}, invalid
 	}
-	app, err := s.app(ctx, a.GetClientID())
-	if err != nil || !app.RefreshEnabled || !s.loginAMRAllowed(ctx, a.GetClientID(), a.AMR) || !s.allowed(ctx, a.UserID, a.GetClientID()) || a.SessionHash == "" {
+	if a.SessionHash == "" {
 		return "", "", time.Time{}, invalid
 	}
 	tx, err := s.db.Begin(ctx)
@@ -65,10 +64,20 @@ func (s *Server) CreateAccessAndRefreshTokens(ctx context.Context, request op.To
 		return "", "", time.Time{}, err
 	}
 	defer tx.Rollback(ctx)
+	app, err := tokenPolicy(ctx, tx, a.UserID, a.GetClientID(), &a.AMR)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	if !app.RefreshEnabled {
+		return "", "", time.Time{}, invalid
+	}
 	family := randomID()
 	if current == "" {
+		if err := requireCurrentAuthorization(ctx, tx, a.ID); err != nil {
+			return "", "", time.Time{}, err
+		}
 		// Extension grants survive center-cookie expiry, but remain bound to session revocation.
-		tag, e := tx.Exec(ctx, `INSERT INTO refresh_families(id,user_id,app_id,session_hash,expires_at) SELECT $1,$2,$3,hash,CASE WHEN $5 THEN 'infinity'::timestamptz ELSE expires_at END FROM sessions WHERE hash=$4 AND user_id=$2 AND expires_at>now()`, family, a.UserID, a.GetClientID(), a.SessionHash, app.Platform == "extension")
+		tag, e := tx.Exec(ctx, `INSERT INTO refresh_families(id,user_id,app_id,session_hash,expires_at) SELECT $1,$2,$3,hash,CASE WHEN $5 THEN 'infinity'::timestamptz ELSE expires_at END FROM sessions WHERE hash=$4 AND user_id=$2 AND expires_at>now()`, family, a.UserID, a.GetClientID(), a.SessionHash, app.PersistentLogin)
 		if e != nil {
 			return "", "", time.Time{}, e
 		}

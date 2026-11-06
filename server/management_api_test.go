@@ -97,6 +97,48 @@ func testManagementAPI(t *testing.T, s *Server, origin string) {
 	}
 	data := out["data"].(map[string]any)
 	id, secret := data["id"].(string), data["secret"].(string)
+	t.Run("legacy project key boundaries", func(t *testing.T) {
+		status, result, _ := call("POST", "/api/admin/keys", map[string]any{"name": "legacy", "app_id": id, "permanent": true, "scopes": []string{"projects:read"}}, "", true, nil)
+		if status != 200 {
+			t.Fatalf("create legacy key: %d", status)
+		}
+		created := result["data"].(map[string]any)
+		keyID, token := created["id"].(string), created["secret"].(string)
+		check := func(token string, want int) {
+			t.Helper()
+			status, result, _ := call("GET", "/api/management/projects", nil, token, false, nil)
+			if status != want {
+				t.Errorf("list status = %d, want %d", status, want)
+			} else if want == 200 {
+				rows := result["data"].([]any)
+				if len(rows) != 1 || rows[0].(map[string]any)["id"] != id {
+					t.Errorf("expected only bound project in list, got %d entries", len(rows))
+				}
+			}
+			if status, _, _ := call("GET", "/api/management/projects/"+id, nil, token, false, nil); status != want {
+				t.Errorf("bound project status = %d, want %d", status, want)
+			}
+		}
+		check(token, 200)
+		if status, _, _ = call("GET", "/api/management/projects/foreign-project", nil, token, false, nil); status != 403 {
+			t.Fatalf("foreign project: %d", status)
+		}
+		status, result, _ = call("POST", "/api/admin/developer-keys/"+keyID+"/rotate", map[string]int{"overlap_hours": 1}, "", true, nil)
+		if status != 200 {
+			t.Fatalf("rotate legacy key: %d", status)
+		}
+		newToken := result["data"].(map[string]any)["secret"].(string)
+		check(token, 200)
+		check(newToken, 200)
+		if status, _, _ = call("DELETE", "/api/admin/keys/"+keyID, nil, "", true, nil); status != 200 {
+			t.Fatalf("revoke legacy key: %d", status)
+		}
+		check(token, 401)
+		check(newToken, 401)
+		if status, _, _ = call("DELETE", "/api/admin/keys/missing-test-key", nil, "", true, nil); status != 404 {
+			t.Errorf("missing key revocation: %d", status)
+		}
+	})
 	if len(secret) < 32 {
 		t.Fatal("missing secret")
 	}

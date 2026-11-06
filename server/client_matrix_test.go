@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -161,6 +162,73 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		return resp.StatusCode, out
 	}
 
+	t.Run("existing token reports current project role", func(t *testing.T) {
+		f, c := code(pub, "openid profile")
+		status, out := exchange(f, c, "", nil)
+		if status != 200 {
+			t.Fatal("token exchange", status)
+		}
+		access := out["access_token"].(string)
+		for _, role := range []string{"admin", "user"} {
+			tag, err := s.db.Exec(ctx, "UPDATE app_users SET role_id=$3 WHERE app_id=$1 AND user_id=$2", pub, uid, role)
+			if err != nil || tag.RowsAffected() != 1 {
+				t.Fatal("set member role", role, err)
+			}
+			status, user := info(access)
+			roles, ok := user["roles"].([]any)
+			if status != 200 || !ok || len(roles) != 1 || roles[0] != role {
+				t.Fatalf("userinfo did not reflect %s for the existing token: %d %v", role, status, roles)
+			}
+		}
+	})
+	t.Run("old codes stay invalid after project policy restoration", func(t *testing.T) {
+		change := func(query string, args ...any) {
+			t.Helper()
+			if _, err := s.db.Exec(ctx, query, args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, policy := range []string{"restricted", "method", "offline", "redirect"} {
+			t.Run(policy, func(t *testing.T) {
+				scope := "openid"
+				if policy == "offline" {
+					change("UPDATE apps SET refresh_enabled=true WHERE id=$1", pub)
+					defer change("UPDATE apps SET refresh_enabled=false WHERE id=$1", pub)
+					scope += " offline_access"
+				}
+				old, oldCode := code(pub, scope)
+				foreign, foreignCode := code(other, "openid")
+				switch policy {
+				case "restricted":
+					change("UPDATE apps SET restricted=true WHERE id=$1", pub)
+					change("UPDATE apps SET restricted=false WHERE id=$1", pub)
+				case "method":
+					change("UPDATE apps SET login_methods=array_remove(login_methods,'password') WHERE id=$1", pub)
+					change("UPDATE apps SET login_methods=$2 WHERE id=$1", pub, allLoginMethods())
+				case "offline":
+					keep, keepCode := code(pub, "openid")
+					change("UPDATE apps SET refresh_enabled=false WHERE id=$1", pub)
+					change("UPDATE apps SET refresh_enabled=true WHERE id=$1", pub)
+					if status, _ := exchange(keep, keepCode, "", nil); status != 200 {
+						t.Fatalf("unaffected code: %d", status)
+					}
+				case "redirect":
+					change("UPDATE apps SET redirects=ARRAY['https://example.invalid/cb'] WHERE id=$1", pub)
+					change("UPDATE apps SET redirects=$2 WHERE id=$1", pub, []string{redirect})
+				}
+				if status, out := exchange(old, oldCode, "", nil); status != 400 || out["error"] != "invalid_grant" {
+					t.Errorf("old code after %s restore: HTTP %d error=%v", policy, status, out["error"])
+				}
+				if status, _ := exchange(foreign, foreignCode, "", nil); status != 200 {
+					t.Fatalf("other project: %d", status)
+				}
+				fresh, freshCode := code(pub, scope)
+				if status, _ := exchange(fresh, freshCode, "", nil); status != 200 {
+					t.Fatalf("new authorization: %d", status)
+				}
+			})
+		}
+	})
 	t.Run("project blacklist permanently revokes issued tokens", func(t *testing.T) {
 		s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=true WHERE id=$1", pub)
 		defer s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=false WHERE id=$1", pub)
@@ -195,6 +263,47 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		defer res.Body.Close()
 		if res.StatusCode == 200 {
 			t.Fatal("removed blacklist revived refresh token")
+		}
+	})
+	t.Run("authorized users and legacy methods keep eligible codes", func(t *testing.T) {
+		f, c := code(pub, "openid")
+		// Simulate an in-flight request from a pre-024 process.
+		if _, err := s.db.Exec(ctx, "UPDATE auth_requests SET body=body-'LoginMethod' WHERE id=$1", f.id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, "INSERT INTO grants(app_id,user_id) VALUES($1,$2)", pub, uid); err != nil {
+			t.Fatal(err)
+		}
+		defer s.db.Exec(ctx, "DELETE FROM grants WHERE app_id=$1 AND user_id=$2", pub, uid)
+		if _, err := s.db.Exec(ctx, "UPDATE apps SET restricted=true,login_methods=array_remove(login_methods,'qr') WHERE id=$1", pub); err != nil {
+			t.Fatal(err)
+		}
+		defer s.db.Exec(ctx, "UPDATE apps SET restricted=false,login_methods=$2 WHERE id=$1", pub, allLoginMethods())
+		if status, _ := exchange(f, c, "", nil); status != 200 {
+			t.Fatalf("eligible legacy code rejected: %d", status)
+		}
+	})
+	t.Run("consumed code cannot bypass policy change during exchange", func(t *testing.T) {
+		if _, err := s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=true WHERE id=$1", pub); err != nil {
+			t.Fatal(err)
+		}
+		defer s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=false WHERE id=$1", pub)
+		_, c := code(pub, "openid offline_access")
+		pending, err := s.AuthRequestByCode(ctx, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, restricted := range []bool{true, false} {
+			if _, err := s.db.Exec(ctx, "UPDATE apps SET restricted=$2 WHERE id=$1", pub, restricted); err != nil {
+				t.Fatal(err)
+			}
+		}
+		request := pending.(*AuthRequest)
+		if _, _, err := s.CreateAccessToken(ctx, request); err == nil {
+			t.Error("access token issued after revocation")
+		}
+		if _, _, _, err := s.CreateAccessAndRefreshTokens(ctx, request, ""); err == nil {
+			t.Error("refresh family issued after revocation")
 		}
 	})
 
@@ -466,14 +575,22 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		}
 		// Extension grants have no time limit, even after center-cookie expiry
 		// and maintenance; explicit logout still revokes the entire grant.
-		if _, err := s.db.Exec(ctx, "UPDATE apps SET platform='extension' WHERE id=$1", pub); err != nil {
+		if _, err := s.db.Exec(ctx, "UPDATE apps SET platform='extension',persistent_login=true WHERE id=$1", pub); err != nil {
 			t.Fatal(err)
 		}
-		defer s.db.Exec(ctx, "UPDATE apps SET platform='web' WHERE id=$1", pub)
+		defer s.db.Exec(ctx, "UPDATE apps SET platform='web',persistent_login=false WHERE id=$1", pub)
 		out = issue()
 		var permanent bool
 		if err := s.db.QueryRow(ctx, "SELECT f.expires_at='infinity'::timestamptz FROM refresh_families f JOIN refresh_tokens t ON t.family_id=f.id WHERE t.hash=$1", digest(out["refresh_token"].(string))).Scan(&permanent); err != nil || !permanent {
 			t.Fatal("extension grant must be permanent", err)
+		}
+		if _, err := s.db.Exec(ctx, "UPDATE apps SET persistent_login=false WHERE id=$1", pub); err != nil {
+			t.Fatal(err)
+		}
+		ordinary := issue()
+		var bounded bool
+		if err := s.db.QueryRow(ctx, "SELECT isfinite(f.expires_at) AND f.expires_at=s.expires_at FROM refresh_families f JOIN refresh_tokens t ON t.family_id=f.id JOIN sessions s ON s.hash=f.session_hash WHERE t.hash=$1", digest(ordinary["refresh_token"].(string))).Scan(&bounded); err != nil || !bounded {
+			t.Fatal("disabled policy must bind new grants to session expiry", err)
 		}
 		if _, err := s.db.Exec(ctx, "UPDATE sessions SET expires_at=now()-interval '1 day' WHERE user_id=$1", uid); err != nil {
 			t.Fatal(err)
@@ -565,6 +682,65 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		}
 		login(browser)
 	})
+	for _, firstStatus := range []int{503, 204} {
+		t.Run("overlapping logout deliveries first status "+strconv.Itoa(firstStatus), func(t *testing.T) {
+			var calls atomic.Int32
+			first, resume := make(chan struct{}), make(chan struct{})
+			receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) == 1 {
+					close(first)
+					<-resume
+					w.WriteHeader(firstStatus)
+					return
+				}
+				if firstStatus == 204 {
+					w.WriteHeader(503)
+				} else {
+					w.WriteHeader(204)
+				}
+			}))
+			defer receiver.Close()
+			released := false
+			defer func() {
+				if !released {
+					close(resume)
+				}
+			}()
+			var id int64
+			if err := s.db.QueryRow(ctx, "INSERT INTO logout_jobs(app_id,user_id,session_hash,endpoint) VALUES($1,$2,'overlap',$3) RETURNING id", pub, uid, receiver.URL).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { _, err := s.deliverLogout(ctx); done <- err }()
+			select {
+			case <-first:
+			case <-time.After(4 * time.Second):
+				t.Fatal("first delivery did not start")
+			}
+			if worked, err := s.deliverLogout(ctx); err != nil || worked {
+				t.Fatal("retried before lease expired", worked, err)
+			}
+			if _, err := s.db.Exec(ctx, "UPDATE logout_jobs SET next_attempt=now() WHERE id=$1", id); err != nil {
+				t.Fatal(err)
+			}
+			if worked, err := s.deliverLogout(ctx); err != nil || !worked {
+				t.Fatal("lease recovery", worked, err)
+			}
+			close(resume)
+			released = true
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			var status string
+			var httpStatus, history int
+			if err := s.db.QueryRow(ctx, `SELECT status,http_status,(SELECT count(*) FROM logout_attempts WHERE job_id=$1) FROM logout_jobs WHERE id=$1`, id).Scan(&status, &httpStatus, &history); err != nil {
+				t.Fatal(err)
+			}
+			if status != "delivered" || httpStatus != 204 || history != 2 {
+				t.Fatalf("late failure changed result: state=%s http=%d history=%d", status, httpStatus, history)
+			}
+		})
+	}
 	t.Run("API key overlap rotation expiry and revocation", func(t *testing.T) {
 
 		var originalAdmin string
@@ -697,14 +873,41 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		}
 		defer s.db.Exec(ctx, "UPDATE users SET admin=false WHERE id=$1", uid)
 
-		receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+		var recovered atomic.Bool
+		receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if recovered.Load() {
+				w.WriteHeader(204)
+			} else {
+				w.WriteHeader(503)
+			}
+		}))
 		defer receiver.Close()
 		var id int64
-		if e := s.db.QueryRow(ctx, "INSERT INTO logout_jobs(app_id,user_id,session_hash,endpoint,attempts) VALUES($1,$2,'test-session',$3,9) RETURNING id", pub, uid, receiver.URL).Scan(&id); e != nil {
+		if e := s.db.QueryRow(ctx, "INSERT INTO logout_jobs(app_id,user_id,session_hash,endpoint) VALUES($1,$2,'test-session',$3) RETURNING id", pub, uid, receiver.URL).Scan(&id); e != nil {
 			t.Fatal(e)
 		}
-		if _, e := s.deliverLogout(ctx); e != nil {
-			t.Fatal(e)
+		for attempt := 1; attempt <= 10; attempt++ {
+			if worked, e := s.deliverLogout(ctx); e != nil || !worked {
+				t.Fatal("automatic retry", attempt, e)
+			}
+			if attempt < 10 {
+				var queued string
+				var tries int
+				var delay float64
+				if err := s.db.QueryRow(ctx, `SELECT status,attempts,extract(epoch FROM next_attempt-now()) FROM logout_jobs WHERE id=$1`, id).Scan(&queued, &tries, &delay); err != nil {
+					t.Fatal(err)
+				}
+				want := float64(min(3600, 5*(1<<attempt)))
+				if queued != "queued" || tries != attempt || delay > want || delay < want-3 {
+					t.Fatalf("attempt %d: state=%s tries=%d delay=%.2f", attempt, queued, tries, delay)
+				}
+				if worked, err := s.deliverLogout(ctx); err != nil || worked {
+					t.Fatal("worker ignored backoff", attempt, err)
+				}
+				if _, err := s.db.Exec(ctx, "UPDATE logout_jobs SET next_attempt=now() WHERE id=$1", id); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 		var state, kind string
 		var code, attempts int
@@ -720,13 +923,22 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 			t.Fatal("duplicate retry", status)
 		}
 		s.db.QueryRow(ctx, "SELECT count(*) FROM logout_attempts WHERE job_id=$1", id).Scan(&attempts)
-		if attempts != 1 {
+		if attempts != 10 {
 			t.Fatal("history lost")
 		}
 		var requestID string
 		s.db.QueryRow(ctx, "SELECT request_id FROM audit WHERE action='admin.logout.retry' AND target=$1 ORDER BY id DESC LIMIT 1", strconv.FormatInt(id, 10)).Scan(&requestID)
 		if requestID == "" {
 			t.Fatal("missing request correlation")
+		}
+		recovered.Store(true)
+		if worked, err := s.deliverLogout(ctx); err != nil || !worked {
+			t.Fatal("manual retry did not run", err)
+		}
+		var cycle, history int
+		if err := s.db.QueryRow(ctx, `SELECT status,retry_count,(SELECT count(*) FROM logout_attempts WHERE job_id=$1)
+			FROM logout_jobs WHERE id=$1`, id).Scan(&state, &cycle, &history); err != nil || state != "delivered" || cycle != 1 || history != 11 {
+			t.Fatal("manual recovery", state, cycle, history, err)
 		}
 		s.db.Exec(ctx, "DELETE FROM logout_jobs WHERE id=$1", id)
 	})
@@ -801,6 +1013,13 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		status, c := complete(f)
 		if status != 200 {
 			t.Fatal("native completion")
+		}
+		// Replacing an unrelated callback must retain the matching dynamic-port registration.
+		if _, err := s.db.Exec(ctx, "UPDATE apps SET redirects=array_append(redirects,'https://example.invalid/other-cb') WHERE id=$1", other); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, "UPDATE apps SET redirects=array_remove(redirects,'https://example.invalid/other-cb') WHERE id=$1", other); err != nil {
+			t.Fatal(err)
 		}
 		if status, _ := exchange(f, c, "", func(q url.Values) { q.Set("redirect_uri", actual) }); status != 200 {
 			t.Fatal("native exchange", status)

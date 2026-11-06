@@ -107,4 +107,3 @@ export function resetToDefaults(currentSettings: Record<string, any>) {
     }
   })
 }
-

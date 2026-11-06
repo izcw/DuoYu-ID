@@ -128,7 +128,15 @@ func (s *Server) processMail(ctx context.Context, lane string) (bool, error) {
 		if lane == "auth" {
 			err = s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM challenges WHERE email=$1 AND purpose=$2 AND digest=$3 AND expires_at>now())", m.Email, m.Purpose, m.ChallengeDigest).Scan(&valid)
 		} else if mid != nil {
-			err = s.db.QueryRow(ctx, `SELECT a.enabled AND NOT k.revoked AND (k.expires_at IS NULL OR k.expires_at>now()) AND 'mail:send'=ANY(k.scopes) FROM mail_messages m JOIN apps a ON a.id=m.app_id JOIN api_keys k ON k.id=m.key_id WHERE m.id=$1`, *mid).Scan(&valid)
+			// Recheck the same current project and owner permissions as requireService:
+			// a queued message must not outlive a revoked project grant or administrator.
+			err = s.db.QueryRow(ctx, `SELECT EXISTS(
+				SELECT 1 FROM mail_messages m JOIN apps a ON a.id=m.app_id JOIN api_keys k ON k.id=m.key_id
+				WHERE m.id=$1 AND a.enabled AND NOT k.revoked
+				AND (k.expires_at IS NULL OR k.expires_at>now()) AND 'mail:send'=ANY(k.scopes)
+				AND (k.app_id=m.app_id OR k.all_projects OR EXISTS(SELECT 1 FROM management_api_grants g WHERE g.key_id=k.id AND g.app_id=m.app_id))
+				AND (k.owner_id IS NULL OR EXISTS(SELECT 1 FROM users u WHERE u.id=k.owner_id AND u.enabled AND u.admin))
+			)`, *mid).Scan(&valid)
 		}
 		if err != nil {
 			status, reason = "retry", "validation_unavailable"

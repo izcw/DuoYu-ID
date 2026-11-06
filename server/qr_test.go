@@ -105,6 +105,17 @@ func testQRLogin(t *testing.T, s *Server, origin string) {
 	}
 	s.db.Exec(ctx, "UPDATE passkeys SET qr_enabled=true WHERE id='qr-test-key'")
 	var wg sync.WaitGroup
+	if _, e = s.db.Exec(ctx, `CREATE FUNCTION fail_qr_session() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'fixture'; END$$;
+		CREATE TRIGGER fail_qr_session BEFORE INSERT ON sessions FOR EACH ROW EXECUTE FUNCTION fail_qr_session()`); e != nil {
+		t.Fatal(e)
+	}
+	status, _ = call(desktop, "/api/auth/qr/"+id+"/poll", map[string]any{})
+	if _, e = s.db.Exec(ctx, "DROP TRIGGER fail_qr_session ON sessions; DROP FUNCTION fail_qr_session()"); e != nil {
+		t.Fatal(e)
+	}
+	if status != 503 {
+		t.Fatalf("session insert failure: %d", status)
+	}
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
@@ -139,6 +150,17 @@ func testQRLogin(t *testing.T, s *Server, origin string) {
 	}
 	_, out = call(desktop, "/api/auth/qr", map[string]any{})
 	id = out["data"].(map[string]any)["id"].(string)
+	if _, e := s.db.Exec(ctx, "ALTER TABLE qr_logins RENAME TO unavailable_qr"); e != nil {
+		t.Fatal(e)
+	}
+	for _, action := range []string{"poll", "cancel"} {
+		if status, _ := call(desktop, "/api/auth/qr/"+id+"/"+action, map[string]any{}); status != 503 {
+			t.Errorf("database unavailable for %s: got %d", action, status)
+		}
+	}
+	if _, e := s.db.Exec(ctx, "ALTER TABLE unavailable_qr RENAME TO qr_logins"); e != nil {
+		t.Fatal(e)
+	}
 	call(desktop, "/api/auth/qr/"+id+"/cancel", map[string]any{})
 	_, out = call(desktop, "/api/auth/qr/"+id+"/poll", map[string]any{})
 	if out["data"].(map[string]any)["status"] != "expired" {

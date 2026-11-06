@@ -61,7 +61,12 @@
                 : '未添加，先绑定手机通行密钥才能扫码登录'
             }}</p></div
           ><el-button @click="dialog = 'iphone'">添加手机</el-button></div
-        ><div class="dy-listitem dy-security-item"><span class="dy-security-icon" aria-hidden="true"><img src="/authenticator.png" alt="" /></span><div class="dy-security-copy">身份验证器<p>支持 Microsoft Authenticator 等动态验证码应用</p></div><el-button @click="dialog = 'authenticator'">管理</el-button></div
+        ><div class="dy-listitem dy-security-item"
+          ><span class="dy-security-icon" aria-hidden="true"
+            ><img src="/authenticator.png" alt="" /></span
+          ><div class="dy-security-copy"
+            >身份验证器<p>支持 Microsoft Authenticator 等动态验证码应用</p></div
+          ><el-button @click="dialog = 'authenticator'">管理</el-button></div
         ><div class="dy-muted" style="margin-top: 24px"
           >修改密码或邮箱后，中心会话与访问令牌将被撤销。已接入退出通知的项目会同步处理；其他项目需在线复核登录状态。</div
         ></section
@@ -115,23 +120,40 @@
         :total="sessions.length"
         layout="total, prev, pager, next"
     /></section>
-    <AuthenticatorSettings v-if="dialog === 'authenticator'" /><section v-if="dialog && dialog !== 'authenticator'" class="dy-panel"
+    <AuthenticatorSettings v-if="dialog === 'authenticator'" /><section
+      v-if="dialog && dialog !== 'authenticator'"
+      class="dy-panel"
       ><el-button text class="dy-back-button" @click="closeDialog">← 返回账号与安全</el-button
       ><el-form label-position="top" autocomplete="off"
         ><template v-if="dialog === 'email'"
           ><el-form-item label="新的邮箱"><el-input v-model="newEmail" type="email" /></el-form-item
           ><el-form-item label="新邮箱验证码"
             ><div style="display: flex; gap: 10px; width: 100%"
-              ><el-input v-model="newCode" autocomplete="off" name="new-email-verification-code" data-lpignore="true" data-1p-ignore maxlength="6" /><el-button
-                :disabled="sending"
-                @click="send(newEmail, 'email')"
+              ><el-input
+                v-model="newCode"
+                autocomplete="off"
+                name="new-email-verification-code"
+                data-lpignore="true"
+                data-1p-ignore
+                maxlength="6"
+              /><el-button :disabled="sending" @click="send(newEmail, 'email')"
                 >发送</el-button
               ></div
             ></el-form-item
           ></template
         ><el-form-item :label="'当前邮箱验证码 · ' + me.email"
           ><div style="display: flex; gap: 10px; width: 100%"
-            ><el-input v-model="code" v-manual-entry inputmode="numeric" autocomplete="off" name="security-verification-code" data-lpignore="true" data-1p-ignore maxlength="6" placeholder="6 位验证码" /><el-button
+            ><el-input
+              v-model="code"
+              v-manual-entry
+              inputmode="numeric"
+              autocomplete="off"
+              name="security-verification-code"
+              data-lpignore="true"
+              data-1p-ignore
+              maxlength="6"
+              placeholder="6 位验证码"
+            /><el-button
               :disabled="sending"
               @click="
                 send(
@@ -179,8 +201,8 @@
   >
 </template>
 <script setup lang="ts">
-import AuthenticatorSettings from './AuthenticatorSettings.vue'
-import { vManualEntry } from '@/directives/manual-entry'
+  import AuthenticatorSettings from './AuthenticatorSettings.vue'
+  import { vManualEntry } from '@/directives/manual-entry'
   import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
   import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
@@ -216,7 +238,6 @@ import { vManualEntry } from '@/directives/manual-entry'
     newCode = ref(''),
     newEmail = ref(''),
     password = ref(''),
-    deleteID = ref(''),
     sending = ref(false)
   const titles: Record<string, string> = {
     authenticator: '身份验证器',
@@ -262,7 +283,6 @@ import { vManualEntry } from '@/directives/manual-entry'
   }
   watch(() => route.fullPath, clearSecurity)
   function selectPasskey(id: string) {
-    deleteID.value = id
     router.push({ path: '/account/security', query: { action: 'deletePasskey', key: id } })
   }
   function closeDialog() {
@@ -328,6 +348,7 @@ import { vManualEntry } from '@/directives/manual-entry'
     }
   }
   async function securityAction() {
+    if (saving.value || loading.value) return
     if (
       dialog.value === 'password' &&
       ([...password.value].length < 6 || [...password.value].length > 64)
@@ -350,17 +371,20 @@ import { vManualEntry } from '@/directives/manual-entry'
         clearSecurity()
         window.location.assign('/login')
       } else if (dialog.value === 'deletePasskey') {
-        await api(
-          '/api/me/passkeys/' + (deleteID.value || String(route.query.key || '')),
-          'DELETE',
-          { code: code.value }
-        )
+        const key = route.query.key
+        if (typeof key !== 'string' || !passkeys.value.some((p) => p.id === key))
+          throw Error('通行密钥已变更，请返回并重新选择')
+        await api('/api/me/passkeys/' + encodeURIComponent(key), 'DELETE', { code: code.value })
         clearSecurity()
         dialog.value = ''
         await load()
       } else {
-        if (!window.isSecureContext) throw Error('当前页面使用 HTTP，无法添加通行密钥。请通过 HTTPS 账号中心操作；本地开发请使用 localhost。')
-        if (typeof navigator.credentials?.create !== 'function') throw Error('当前浏览器未提供通行密钥功能，请检查浏览器版本或安全策略。')
+        if (!window.isSecureContext)
+          throw Error(
+            '当前页面使用 HTTP，无法添加通行密钥。请通过 HTTPS 账号中心操作；本地开发请使用 localhost。'
+          )
+        if (typeof navigator.credentials?.create !== 'function')
+          throw Error('当前浏览器未提供通行密钥功能，请检查浏览器版本或安全策略。')
         const options = await api('/api/me/passkeys/begin', 'POST', {
           code: code.value,
           qr: dialog.value === 'iphone'

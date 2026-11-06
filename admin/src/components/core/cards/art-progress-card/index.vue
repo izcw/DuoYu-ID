@@ -51,8 +51,10 @@
 
   const animationDuration = 500
   const currentPercentage = ref(0)
+  let frame = 0
 
   const animateProgress = () => {
+    cancelAnimationFrame(frame)
     const startTime = Date.now()
     const startValue = currentPercentage.value
     const endValue = props.percentage
@@ -65,16 +67,17 @@
       currentPercentage.value = startValue + (endValue - startValue) * progress
 
       if (progress < 1) {
-        requestAnimationFrame(animate)
+        frame = requestAnimationFrame(animate)
       }
     }
 
-    requestAnimationFrame(animate)
+    frame = requestAnimationFrame(animate)
   }
 
   onMounted(() => {
     animateProgress()
   })
+  onUnmounted(() => cancelAnimationFrame(frame))
 
   // 当 percentage 属性变化时重新执行动画
   watch(

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +12,8 @@ import (
 
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *Server) queryList(w http.ResponseWriter, r *http.Request, sql string, args ...any) {
@@ -145,7 +148,7 @@ func (s *Server) apps(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, "SELECT id,name,description,redirects,logout_redirects,public,enabled,restricted,created_at,platform,refresh_enabled,backchannel_logout_uri,logo FROM apps ORDER BY created_at DESC LIMIT 200")
+	s.queryList(w, r, "SELECT id,name,description,redirects,logout_redirects,public,enabled,restricted,created_at,platform,refresh_enabled,backchannel_logout_uri,logo,persistent_login FROM apps ORDER BY created_at DESC LIMIT 200")
 }
 func (s *Server) appUsers(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
@@ -182,8 +185,19 @@ func (s *Server) saveApp(w http.ResponseWriter, r *http.Request) {
 	if !yes {
 		return
 	}
-	var a App
-	if decode(r, &a) != nil || len(strings.TrimSpace(a.Name)) < 1 || len([]rune(a.Name)) > 60 || len(a.Description) > 1000 || len(a.Redirects) == 0 || len(a.Redirects) > 10 || len(a.LogoutRedirects) > 10 {
+	var input struct {
+		App
+		Persistent *bool `json:"persistent_login"`
+	}
+	if decode(r, &input) != nil {
+		fail(w, 400, "检查应用名称和回调地址（最多 10 个）")
+		return
+	}
+	a := input.App
+	if input.Persistent != nil {
+		a.PersistentLogin = *input.Persistent
+	}
+	if len(strings.TrimSpace(a.Name)) < 1 || len([]rune(a.Name)) > 60 || len(a.Description) > 1000 || len(a.Redirects) == 0 || len(a.Redirects) > 10 || len(a.LogoutRedirects) > 10 {
 		fail(w, 400, "检查应用名称和回调地址（最多 10 个）")
 		return
 	}
@@ -262,7 +276,7 @@ func (s *Server) saveApp(w http.ResponseWriter, r *http.Request) {
 			secret = randomID()
 			a.Secret = s.mac(secret)
 		}
-		_, e = s.db.Exec(r.Context(), "INSERT INTO apps(id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)", id, a.Name, a.Description, a.Secret, a.Redirects, a.LogoutRedirects, a.Public, a.Enabled, a.Restricted, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI, a.Logo, a.AllowedOrigins, a.LoginMethods)
+		_, e = s.db.Exec(r.Context(), "INSERT INTO apps(id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods,persistent_login) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)", id, a.Name, a.Description, a.Secret, a.Redirects, a.LogoutRedirects, a.Public, a.Enabled, a.Restricted, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI, a.Logo, a.AllowedOrigins, a.LoginMethods, a.PersistentLogin)
 	} else {
 		var wasPublic bool
 		e = s.db.QueryRow(r.Context(), "SELECT public FROM apps WHERE id=$1", id).Scan(&wasPublic)
@@ -274,7 +288,7 @@ func (s *Server) saveApp(w http.ResponseWriter, r *http.Request) {
 		if management, ok := r.Context().Value(managementContextKey{}).(*managementAuth); ok {
 			expected = management.Revision
 		}
-		tag, err := s.db.Exec(r.Context(), "UPDATE apps SET name=$1,description=$2,redirects=$3,logout_redirects=$4,enabled=$5,restricted=$6,refresh_enabled=$8,platform=$9,backchannel_logout_uri=$10,logo=$11,allowed_origins=$12,login_methods=$13,management_revision=management_revision+1 WHERE id=$7 AND ($14::bigint IS NULL OR management_revision=$14)", a.Name, a.Description, a.Redirects, a.LogoutRedirects, a.Enabled, a.Restricted, id, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI, a.Logo, a.AllowedOrigins, a.LoginMethods, expected)
+		tag, err := s.db.Exec(r.Context(), "UPDATE apps SET name=$1,description=$2,redirects=$3,logout_redirects=$4,enabled=$5,restricted=$6,refresh_enabled=$8,platform=$9,backchannel_logout_uri=$10,logo=$11,allowed_origins=$12,login_methods=$13,persistent_login=COALESCE($15::boolean,persistent_login),management_revision=management_revision+1 WHERE id=$7 AND ($14::bigint IS NULL OR management_revision=$14)", a.Name, a.Description, a.Redirects, a.LogoutRedirects, a.Enabled, a.Restricted, id, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI, a.Logo, a.AllowedOrigins, a.LoginMethods, expected, input.Persistent)
 		e = err
 		if e == nil && tag.RowsAffected() != 1 {
 			fail(w, 412, "项目已被修改，请重新 GET 项目再提交 If-Match")
@@ -316,9 +330,22 @@ func (s *Server) setGrants(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Emails []string `json:"emails"`
 	}
-	if decode(r, &in) != nil || len(in.Emails) > 500 {
-		fail(w, 400, "最多设置 500 个账号")
+	if decode(r, &in) != nil || in.Emails == nil || len(in.Emails) > 500 {
+		fail(w, 400, "请提交 emails 数组，最多设置 500 个账号")
 		return
+	}
+	emails := make([]string, 0, len(in.Emails))
+	seen := make(map[string]bool, len(in.Emails))
+	for _, raw := range in.Emails {
+		email := normalizeEmail(raw)
+		if email == "" {
+			fail(w, 400, "名单中存在无效邮箱")
+			return
+		}
+		if !seen[email] {
+			emails = append(emails, email)
+			seen[email] = true
+		}
 	}
 	tx, e := s.db.Begin(r.Context())
 	if e != nil {
@@ -327,24 +354,25 @@ func (s *Server) setGrants(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	id := r.PathValue("id")
-	emails := make([]string, 0, len(in.Emails))
-	for _, email := range in.Emails {
-		emails = append(emails, normalizeEmail(email))
-	}
-	if _, e = tx.Exec(r.Context(), "DELETE FROM grants WHERE app_id=$1 AND user_id NOT IN(SELECT id FROM users WHERE email=ANY($2))", id, emails); e != nil {
-		fail(w, 500, "更新失败")
+	if !lockPolicyProject(w, r.Context(), tx, id) {
 		return
 	}
-	for _, email := range in.Emails {
-		var uid string
-		if e = tx.QueryRow(r.Context(), "SELECT id FROM users WHERE email=$1", normalizeEmail(email)).Scan(&uid); e != nil {
-			fail(w, 400, "名单中存在未注册邮箱")
-			return
-		}
-		if _, e = tx.Exec(r.Context(), "INSERT INTO grants(app_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING", id, uid); e != nil {
-			fail(w, 400, "授权失败")
-			return
-		}
+	var users []string
+	if e = tx.QueryRow(r.Context(), "SELECT ARRAY(SELECT id FROM users WHERE email=ANY($1))", emails).Scan(&users); e != nil {
+		fail(w, 503, "账号查询暂不可用")
+		return
+	}
+	if len(users) != len(emails) {
+		fail(w, 400, "名单中存在未注册邮箱")
+		return
+	}
+	if _, e = tx.Exec(r.Context(), "DELETE FROM grants WHERE app_id=$1 AND NOT(user_id=ANY($2))", id, users); e != nil {
+		fail(w, 503, "更新失败")
+		return
+	}
+	if _, e = tx.Exec(r.Context(), "INSERT INTO grants(app_id,user_id) SELECT $1,unnest($2::text[]) ON CONFLICT DO NOTHING", id, users); e != nil {
+		fail(w, 503, "更新失败")
+		return
 	}
 	if tx.Commit(r.Context()) != nil {
 		fail(w, 500, "更新失败")
@@ -352,6 +380,18 @@ func (s *Server) setGrants(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r.Context(), u.ID, "admin.app.grants", id, true)
 	ok(w, nil)
+}
+
+// Serialize whole-list replacements with policy and role changes for this project.
+func lockPolicyProject(w http.ResponseWriter, ctx context.Context, tx pgx.Tx, id string) bool {
+	var project string
+	err := tx.QueryRow(ctx, "SELECT id FROM apps WHERE id=$1 FOR UPDATE", id).Scan(&project)
+	if errors.Is(err, pgx.ErrNoRows) {
+		fail(w, 404, "项目不存在")
+	} else if err != nil {
+		fail(w, 503, "项目暂不可用")
+	}
+	return err == nil
 }
 func (s *Server) auditList(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
@@ -412,8 +452,13 @@ func (s *Server) revokeKey(w http.ResponseWriter, r *http.Request) {
 	if !yes {
 		return
 	}
-	if _, e := s.db.Exec(r.Context(), "UPDATE api_keys SET revoked=true WHERE id=$1", r.PathValue("id")); e != nil {
+	tag, e := s.db.Exec(r.Context(), "UPDATE api_keys SET revoked=true WHERE id=$1", r.PathValue("id"))
+	if e != nil {
 		fail(w, 500, "撤销失败")
+		return
+	}
+	if tag.RowsAffected() != 1 {
+		fail(w, 404, "凭证不存在")
 		return
 	}
 	s.audit(r.Context(), u.ID, "admin.key.revoked", r.PathValue("id"), true)

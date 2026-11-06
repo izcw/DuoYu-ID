@@ -50,6 +50,7 @@ export class IframeRouteManager {
    */
   clear(): void {
     this.iframeRoutes = []
+    sessionStorage.removeItem('iframeRoutes')
   }
 
   /**
@@ -58,6 +59,8 @@ export class IframeRouteManager {
   save(): void {
     if (this.iframeRoutes.length > 0) {
       sessionStorage.setItem('iframeRoutes', JSON.stringify(this.iframeRoutes))
+    } else {
+      sessionStorage.removeItem('iframeRoutes')
     }
   }
 

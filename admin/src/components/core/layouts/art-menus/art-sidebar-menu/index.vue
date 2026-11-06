@@ -55,6 +55,7 @@
       <ArtIconButton
         class="switch-btn size-10"
         icon="ri:arrow-left-right-fill"
+        :aria-label="$t('topBar.actions.menu')"
         @click="toggleDualMenuMode"
       />
     </div>
@@ -305,21 +306,30 @@
   /**
    * 监听窗口尺寸变化，自动处理移动端菜单
    */
-  watch(width, (newWidth) => {
-    if (newWidth < MOBILE_BREAKPOINT) {
-      settingStore.setMenuOpen(false)
-      if (!menuOpen.value) {
+  watch(
+    width,
+    (newWidth) => {
+      if (newWidth < MOBILE_BREAKPOINT) {
+        settingStore.setMenuOpen(false)
+        if (!menuOpen.value) {
+          showMobileModal.value = false
+        }
+      } else {
         showMobileModal.value = false
       }
-    } else {
-      showMobileModal.value = false
-    }
-  }, { immediate: true })
+    },
+    { immediate: true }
+  )
 
   /**
    * 监听菜单开关状态变化
    */
-  watch(() => route.fullPath, () => { if (isMobileScreen.value) handleMenuClose() })
+  watch(
+    () => route.fullPath,
+    () => {
+      if (isMobileScreen.value) handleMenuClose()
+    }
+  )
 
   watch(menuOpen, (isMenuOpen: boolean) => {
     if (!isMobileScreen.value) {

@@ -16,10 +16,16 @@
     >
       <div class="flex-c flex-1 min-w-0 leading-15" style="display: flex">
         <!-- 系统信息  -->
-        <div class="flex-c c-p" @click="toHome" v-if="isTopMenu">
+        <button
+          type="button"
+          class="flex-c c-p"
+          @click="toHome"
+          v-if="isTopMenu"
+          :aria-label="$t('topBar.actions.home')"
+        >
           <ArtLogo class="pl-4.5" />
           <p v-if="width >= 1400" class="my-0 mx-2 ml-2 text-lg">{{ AppConfig.systemInfo.name }}</p>
-        </div>
+        </button>
 
         <ArtLogo
           class="!hidden pl-3.5 overflow-hidden align-[-0.15em] fill-current"
@@ -30,6 +36,7 @@
         <ArtIconButton
           v-if="isLeftMenu && shouldShowMenuButton"
           icon="ri:menu-2-fill"
+          :aria-label="$t('topBar.actions.menu')"
           class="ml-3 max-sm:ml-[7px]"
           @click="visibleMenu"
         />
@@ -38,6 +45,7 @@
         <ArtIconButton
           v-if="shouldShowRefreshButton"
           icon="ri:refresh-line"
+          :aria-label="$t('topBar.actions.refresh')"
           class="!ml-3 refresh-btn max-sm:!hidden"
           :style="{ marginLeft: !isLeftMenu ? '10px' : '0' }"
           @click="reload"
@@ -45,7 +53,11 @@
 
         <!-- 快速入口 -->
         <ArtFastEnter v-if="shouldShowFastEnter && width >= headerBarFastEnterMinWidth">
-          <ArtIconButton icon="ri:function-line" class="ml-3" />
+          <ArtIconButton
+            icon="ri:function-line"
+            :aria-label="$t('topBar.actions.quick')"
+            class="ml-3"
+          />
         </ArtFastEnter>
 
         <!-- 面包屑 -->
@@ -62,7 +74,9 @@
 
       <div class="dy-header-actions flex-c shrink-0 gap-2.5 pr-6 max-sm:pr-4">
         <!-- 搜索 -->
-        <div
+        <button
+          type="button"
+          :aria-label="$t('topBar.search.title')"
           v-if="shouldShowGlobalSearch"
           class="flex-cb w-40 h-9 px-2.5 c-p border border-g-400 rounded-custom-sm max-md:!hidden"
           @click="openSearchDialog"
@@ -76,11 +90,14 @@
             <ArtSvgIcon v-else icon="ri:command-fill" class="text-xs" />
             <span class="ml-0.5 text-xs">k</span>
           </div>
-        </div>
+        </button>
 
         <!-- 全屏按钮 -->
         <ArtIconButton
           v-if="shouldShowFullscreen"
+          :aria-label="
+            isFullscreen ? $t('topBar.actions.exitFullscreen') : $t('topBar.actions.fullscreen')
+          "
           :icon="isFullscreen ? 'ri:fullscreen-exit-line' : 'ri:fullscreen-fill'"
           :class="[!isFullscreen ? 'full-screen-btn' : 'exit-full-screen-btn', 'ml-3']"
           class="max-md:!hidden"
@@ -93,7 +110,11 @@
           popper-class="langDropDownStyle"
           v-if="shouldShowLanguage"
         >
-          <ArtIconButton icon="ri:translate-2" class="language-btn text-[19px]" />
+          <ArtIconButton
+            icon="ri:translate-2"
+            :aria-label="$t('topBar.actions.language')"
+            class="language-btn text-[19px]"
+          />
           <template #dropdown>
             <ElDropdownMenu>
               <div v-for="item in languageOptions" :key="item.value" class="lang-btn-item">
@@ -113,6 +134,7 @@
         <ArtIconButton
           v-if="shouldShowNotification"
           icon="ri:notification-2-line"
+          :aria-label="$t('topBar.actions.notice')"
           class="notice-button relative"
           @click="visibleNotice"
         >
@@ -123,6 +145,7 @@
         <ArtIconButton
           v-if="shouldShowChat"
           icon="ri:message-3-line"
+          :aria-label="$t('topBar.actions.chat')"
           class="chat-button relative"
           @click="openChat"
         >
@@ -134,7 +157,12 @@
           <ElPopover :visible="showSettingGuide" placement="bottom-start" :width="190" :offset="0">
             <template #reference>
               <div class="flex-cc">
-                <ArtIconButton icon="ri:settings-line" class="setting-btn" @click="openSetting" />
+                <ArtIconButton
+                  icon="ri:settings-line"
+                  :aria-label="$t('topBar.actions.settings')"
+                  class="setting-btn"
+                  @click="openSetting"
+                />
               </div>
             </template>
             <template #default>
@@ -151,6 +179,7 @@
         <!-- 主题切换按钮 -->
         <ArtIconButton
           v-if="shouldShowThemeToggle"
+          :aria-label="$t('topBar.actions.theme')"
           @click="themeAnimation"
           :icon="isDark ? 'ri:sun-fill' : 'ri:moon-line'"
         />

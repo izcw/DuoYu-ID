@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,6 +45,13 @@ func (s *Server) sendCode(w http.ResponseWriter, r *http.Request) {
 		fail(w, 429, "发送过于频繁，请稍后再试")
 		return
 	}
+	var exists bool
+	if in.Purpose == "reset" {
+		if err := s.db.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM users WHERE email=$1 AND enabled)", in.Email).Scan(&exists); err != nil {
+			fail(w, 503, "账号服务暂不可用，请稍后再试")
+			return
+		}
+	}
 	n, e := rand.Int(rand.Reader, big.NewInt(1000000))
 	if e != nil {
 		fail(w, 500, "生成验证码失败")
@@ -60,8 +68,6 @@ func (s *Server) sendCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Reset requests for unknown users deliberately return the same response.
-	var exists bool
-	s.db.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM users WHERE email=$1 AND enabled)", in.Email).Scan(&exists)
 	if in.Purpose == "reset" && !exists {
 		ok(w, s.mailReceipt())
 		return
@@ -76,31 +82,103 @@ func (s *Server) sendCode(w http.ResponseWriter, r *http.Request) {
 	ok(w, s.mailReceipt())
 }
 
-// A row lock serializes concurrent attempts. Failed attempts are committed too.
+type emailCode struct{ email, value string }
+
+// The authenticated browser session and its owner must still be current at
+// the time a credential is changed. Serialize enrollment limits per user.
+func lockCredentialSession(w http.ResponseWriter, r *http.Request, tx pgx.Tx, u User) bool {
+	c, err := r.Cookie("duoyu_session")
+	var id string
+	if err == nil {
+		err = tx.QueryRow(r.Context(), `SELECT u.id FROM users u JOIN sessions s ON s.user_id=u.id
+			WHERE u.id=$1 AND u.email=$2 AND u.enabled AND s.hash=$3 AND s.expires_at>clock_timestamp()
+			FOR UPDATE OF u FOR SHARE OF s`, u.ID, u.Email, digest(c.Value)).Scan(&id)
+	}
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, http.ErrNoCookie) {
+		fail(w, 401, "请重新登录")
+		return false
+	}
+	if err != nil {
+		fail(w, 503, "暂时无法核验登录状态")
+		return false
+	}
+	return true
+}
+
+// Lock multiple addresses in a consistent order. Failed attempts count, but a
+// valid code is only deleted once all the required proofs have matched.
+func (s *Server) matchEmailCodes(ctx context.Context, tx pgx.Tx, purpose string, codes ...emailCode) (bool, error) {
+	slices.SortFunc(codes, func(a, b emailCode) int { return strings.Compare(a.email, b.email) })
+	for _, c := range codes {
+		var want string
+		var attempts int
+		var expired bool
+		err := tx.QueryRow(ctx, "SELECT digest,attempts,expires_at<=clock_timestamp() FROM challenges WHERE email=$1 AND purpose=$2 FOR UPDATE", c.email, purpose).Scan(&want, &attempts, &expired)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if expired || attempts >= 5 {
+			return false, nil
+		}
+		if len(c.value) != 6 || subtle.ConstantTimeCompare([]byte(want), []byte(s.mac(c.email+"|"+purpose+"|"+c.value))) != 1 {
+			_, err = tx.Exec(ctx, "UPDATE challenges SET attempts=attempts+1 WHERE email=$1 AND purpose=$2", c.email, purpose)
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func (s *Server) checkEmailCodes(ctx context.Context, tx pgx.Tx, purpose string, codes ...emailCode) (bool, error) {
+	if ok, err := s.matchEmailCodes(ctx, tx, purpose, codes...); err != nil || !ok {
+		return false, err
+	}
+	for _, c := range codes {
+		if _, err := tx.Exec(ctx, "DELETE FROM challenges WHERE email=$1 AND purpose=$2", c.email, purpose); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 func (s *Server) consumeCode(ctx context.Context, email, purpose, code string) bool {
-	tx, e := s.db.Begin(ctx)
-	if e != nil {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
 		return false
 	}
 	defer tx.Rollback(ctx)
-	var want string
-	var attempts int
-	var expires time.Time
-	e = tx.QueryRow(ctx, "SELECT digest,attempts,expires_at FROM challenges WHERE email=$1 AND purpose=$2 FOR UPDATE", email, purpose).Scan(&want, &attempts, &expires)
-	if e != nil || attempts >= 5 || time.Now().After(expires) {
-		return false
-	}
-	good := len(code) == 6 && subtle.ConstantTimeCompare([]byte(want), []byte(s.mac(email+"|"+purpose+"|"+code))) == 1
-	if good {
-		_, e = tx.Exec(ctx, "DELETE FROM challenges WHERE email=$1 AND purpose=$2", email, purpose)
-	} else {
-		_, e = tx.Exec(ctx, "UPDATE challenges SET attempts=attempts+1 WHERE email=$1 AND purpose=$2", email, purpose)
-	}
-	if e != nil {
-		return false
-	}
-	return tx.Commit(ctx) == nil && good
+	good, err := s.checkEmailCodes(ctx, tx, purpose, emailCode{email, code})
+	return err == nil && tx.Commit(ctx) == nil && good
 }
+
+// A successful proof stays in this transaction until the account change and
+// revocation commit. Commit only the attempt counter on an invalid proof.
+func (s *Server) authorizeChange(w http.ResponseWriter, ctx context.Context, tx pgx.Tx, purpose string, codes ...emailCode) bool {
+	valid, err := s.checkEmailCodes(ctx, tx, purpose, codes...)
+	if err == nil && !valid {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		fail(w, 503, "验证码验证暂不可用")
+		return false
+	}
+	if !valid {
+		fail(w, 400, "验证码无效或已过期")
+		return false
+	}
+	return true
+}
+
+func revokeAccountCredentials(ctx context.Context, tx pgx.Tx, id string) error {
+	if _, err := tx.Exec(ctx, "DELETE FROM sessions WHERE user_id=$1", id); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, "DELETE FROM access_tokens WHERE user_id=$1", id)
+	return err
+}
+
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Email         string `json:"email"`
@@ -170,7 +248,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if missing {
 		var registration string
-		s.db.QueryRow(r.Context(), "SELECT value FROM settings WHERE key='registration'").Scan(&registration)
+		if err := s.db.QueryRow(r.Context(), "SELECT value FROM settings WHERE key='registration'").Scan(&registration); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			fail(w, 503, "注册设置暂不可用")
+			return
+		}
 		if in.Mode != "code" || registration != "true" {
 			fail(w, 403, "当前未开放新账号注册，请联系管理员")
 			return
@@ -181,14 +262,22 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			fail(w, 503, "账号创建暂不可用，请重试")
 			return
 		}
-		_, e = s.db.Exec(r.Context(), "INSERT INTO users(id,email,name,password_hash) VALUES($1,$2,$3,$4)", id, in.Email, strings.Split(in.Email, "@")[0], hashPassword(initialPassword))
+		tag, e := s.db.Exec(r.Context(), `INSERT INTO users(id,email,name,password_hash) SELECT $1,$2,$3,$4
+			FROM settings WHERE key='registration' AND value='true' FOR SHARE`, id, in.Email, strings.Split(in.Email, "@")[0], hashPassword(initialPassword))
 		if e != nil {
 			fail(w, 409, "账号创建失败，请重新登录")
 			return
 		}
+		if tag.RowsAffected() == 0 {
+			fail(w, 403, "当前未开放新账号注册，请联系管理员")
+			return
+		}
 		s.audit(r.Context(), id, "account.created", "", true)
 	}
-	if s.newSession(w, r, id, amr) != nil {
+	if err := s.issueEmailSession(w, r, id, amr, in.Email, h); errors.Is(err, pgx.ErrNoRows) {
+		fail(w, 401, "账号已变更，请重新登录")
+		return
+	} else if err != nil {
 		fail(w, 500, "创建会话失败")
 		return
 	}
@@ -273,7 +362,7 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Email = normalizeEmail(in.Email)
-	if s.limited(r, "reset:"+remoteIP(r), 20, time.Hour) || !s.consumeCode(r.Context(), in.Email, "reset", in.Code) {
+	if s.limited(r, "reset:"+remoteIP(r), 20, time.Hour) {
 		fail(w, 400, "验证码无效或已过期")
 		return
 	}
@@ -283,14 +372,19 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if !s.authorizeChange(w, r.Context(), tx, "reset", emailCode{in.Email, in.Code}) {
+		return
+	}
 	var id string
 	e = tx.QueryRow(r.Context(), "UPDATE users SET password_hash=$1,password_failures=0,password_lock_level=0,password_locked_until=NULL WHERE email=$2 AND enabled RETURNING id", hashPassword(in.Password), in.Email).Scan(&id)
-	if e != nil {
+	if errors.Is(e, pgx.ErrNoRows) {
 		fail(w, 400, "无法重置该账号")
 		return
 	}
-	tx.Exec(r.Context(), "DELETE FROM sessions WHERE user_id=$1", id)
-	tx.Exec(r.Context(), "DELETE FROM access_tokens WHERE user_id=$1", id)
+	if e != nil || revokeAccountCredentials(r.Context(), tx, id) != nil {
+		fail(w, 503, "更新失败")
+		return
+	}
 	if tx.Commit(r.Context()) != nil {
 		fail(w, 500, "更新失败")
 		return
@@ -311,19 +405,28 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "密码须为 6–64 个字符")
 		return
 	}
-	if !s.consumeCode(r.Context(), u.Email, "reset", in.Code) {
-		fail(w, 400, "验证码无效或已过期")
-		return
-	}
 	tx, e := s.db.Begin(r.Context())
 	if e != nil {
 		fail(w, 500, "更新失败")
 		return
 	}
 	defer tx.Rollback(r.Context())
-	tx.Exec(r.Context(), "UPDATE users SET password_hash=$1,password_failures=0,password_lock_level=0,password_locked_until=NULL WHERE id=$2", hashPassword(in.Password), u.ID)
-	tx.Exec(r.Context(), "DELETE FROM sessions WHERE user_id=$1", u.ID)
-	tx.Exec(r.Context(), "DELETE FROM access_tokens WHERE user_id=$1", u.ID)
+	if !s.authorizeChange(w, r.Context(), tx, "reset", emailCode{u.Email, in.Code}) {
+		return
+	}
+	tag, err := tx.Exec(r.Context(), "UPDATE users SET password_hash=$1,password_failures=0,password_lock_level=0,password_locked_until=NULL WHERE id=$2 AND email=$3 AND enabled", hashPassword(in.Password), u.ID, u.Email)
+	if err != nil {
+		fail(w, 503, "更新失败")
+		return
+	}
+	if tag.RowsAffected() != 1 {
+		fail(w, 409, "账号已变更，请重新登录")
+		return
+	}
+	if revokeAccountCredentials(r.Context(), tx, u.ID) != nil {
+		fail(w, 503, "更新失败")
+		return
+	}
 	if tx.Commit(r.Context()) != nil {
 		fail(w, 500, "更新失败")
 		return
@@ -351,22 +454,28 @@ func (s *Server) changeEmail(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "请填写新的邮箱")
 		return
 	}
-	if !s.consumeCode(r.Context(), u.Email, "email", in.OldCode) || !s.consumeCode(r.Context(), in.Email, "email", in.NewCode) {
-		fail(w, 400, "验证码无效或已过期")
-		return
-	}
 	tx, e := s.db.Begin(r.Context())
 	if e != nil {
 		fail(w, 500, "更新失败")
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if _, e = tx.Exec(r.Context(), "UPDATE users SET email=$1 WHERE id=$2", in.Email, u.ID); e != nil {
+	if !s.authorizeChange(w, r.Context(), tx, "email", emailCode{u.Email, in.OldCode}, emailCode{in.Email, in.NewCode}) {
+		return
+	}
+	tag, e := tx.Exec(r.Context(), "UPDATE users SET email=$1 WHERE id=$2 AND email=$3 AND enabled", in.Email, u.ID, u.Email)
+	if e != nil {
 		fail(w, 409, "该邮箱不可用")
 		return
 	}
-	tx.Exec(r.Context(), "DELETE FROM sessions WHERE user_id=$1", u.ID)
-	tx.Exec(r.Context(), "DELETE FROM access_tokens WHERE user_id=$1", u.ID)
+	if tag.RowsAffected() != 1 {
+		fail(w, 409, "账号已变更，请重新登录")
+		return
+	}
+	if revokeAccountCredentials(r.Context(), tx, u.ID) != nil {
+		fail(w, 503, "更新失败")
+		return
+	}
 	if tx.Commit(r.Context()) != nil {
 		fail(w, 500, "更新失败")
 		return
@@ -391,8 +500,15 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, agent string
 		var created, expires time.Time
-		rows.Scan(&id, &created, &expires, &agent)
+		if err := rows.Scan(&id, &created, &expires, &agent); err != nil {
+			fail(w, 503, "会话查询暂不可用")
+			return
+		}
 		out = append(out, map[string]any{"id": id, "agent": agent, "created_at": created, "expires_at": expires, "current": cookie != nil && digest(cookie.Value) == id})
+	}
+	if rows.Err() != nil {
+		fail(w, 503, "会话查询暂不可用")
+		return
 	}
 	ok(w, out)
 }

@@ -1,7 +1,13 @@
 <!-- 系统logo -->
 <template>
   <div class="flex-cc">
-    <img :style="logoStyle" src="/logo.png" alt="多鱼账号" class="w-full h-full" style="object-fit:contain;border-radius:4px" />
+    <img
+      :style="logoStyle"
+      src="/logo.png"
+      alt="多鱼账号"
+      class="w-full h-full"
+      style="object-fit: contain; border-radius: 4px"
+    />
   </div>
 </template>
 

@@ -64,8 +64,8 @@ func (s *Server) setBlacklist(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Entries []string `json:"entries"`
 	}
-	if decode(r, &in) != nil || len(in.Entries) > 500 {
-		fail(w, 400, "最多添加 500 个账号 ID 或邮箱")
+	if decode(r, &in) != nil || in.Entries == nil || len(in.Entries) > 500 {
+		fail(w, 400, "请提交 entries 数组，最多添加 500 个账号 ID 或邮箱")
 		return
 	}
 	tx, err := s.db.Begin(r.Context())
@@ -75,9 +75,7 @@ func (s *Server) setBlacklist(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	app := r.PathValue("id")
-	var appID string
-	if err = tx.QueryRow(r.Context(), "SELECT id FROM apps WHERE id=$1 FOR UPDATE", app).Scan(&appID); err != nil {
-		fail(w, 404, "项目不存在")
+	if !lockPolicyProject(w, r.Context(), tx, app) {
 		return
 	}
 	entries := []string{}
@@ -88,7 +86,11 @@ func (s *Server) setBlacklist(w http.ResponseWriter, r *http.Request) {
 		if accountNumberPattern.MatchString(identifier) {
 			var id string
 			if err = tx.QueryRow(r.Context(), "SELECT id FROM users WHERE account_id=$1", identifier).Scan(&id); err != nil {
-				fail(w, 400, "名单中存在不存在的账号 ID")
+				if errors.Is(err, pgx.ErrNoRows) {
+					fail(w, 400, "名单中存在不存在的账号 ID")
+				} else {
+					fail(w, 503, "账号查询暂不可用")
+				}
 				return
 			}
 			uid = &id

@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/skip2/go-qrcode"
 )
 
@@ -49,7 +51,10 @@ func (s *Server) cancelQR(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, "请求不属于此浏览器")
 		return
 	}
-	s.db.Exec(r.Context(), "DELETE FROM qr_logins WHERE id=$1 AND owner_hash=$2", r.PathValue("id"), digest(c.Value))
+	if _, e := s.db.Exec(r.Context(), "DELETE FROM qr_logins WHERE id=$1 AND owner_hash=$2", r.PathValue("id"), digest(c.Value)); e != nil {
+		fail(w, 503, "暂时无法取消，请重试")
+		return
+	}
 	ok(w, nil)
 }
 func (s *Server) pollQR(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +76,10 @@ func (s *Server) pollQR(w http.ResponseWriter, r *http.Request) {
 	var uid, approver *string
 	var expires time.Time
 	e = tx.QueryRow(r.Context(), "SELECT status,user_id,approver_session,expires_at FROM qr_logins WHERE id=$1 AND owner_hash=$2 FOR UPDATE", r.PathValue("id"), digest(c.Value)).Scan(&status, &uid, &approver, &expires)
+	if e != nil && !errors.Is(e, pgx.ErrNoRows) {
+		fail(w, 503, "暂时无法查询，请重试")
+		return
+	}
 	if e != nil || time.Now().After(expires) || status == "consumed" {
 		ok(w, map[string]string{"status": "expired"})
 		return
@@ -79,28 +88,22 @@ func (s *Server) pollQR(w http.ResponseWriter, r *http.Request) {
 		ok(w, map[string]string{"status": status})
 		return
 	}
-	var enabled bool
-	e = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id JOIN passkeys p ON p.id=s.passkey_id AND p.user_id=u.id AND p.qr_enabled WHERE u.id=$1 AND u.enabled AND s.hash=$2 AND s.expires_at>now())", uid, approver).Scan(&enabled)
-	if e != nil || !enabled {
+	var owner string
+	e = tx.QueryRow(r.Context(), "SELECT u.id FROM users u JOIN sessions s ON s.user_id=u.id JOIN passkeys p ON p.id=s.passkey_id AND p.user_id=u.id AND p.qr_enabled WHERE u.id=$1 AND u.enabled AND s.hash=$2 AND s.expires_at>clock_timestamp() FOR SHARE OF u,s,p", uid, approver).Scan(&owner)
+	if errors.Is(e, pgx.ErrNoRows) || time.Now().After(expires) {
 		fail(w, 403, "确认已失效，请重新扫码")
 		return
 	}
-	token := randomID()
-	_, e = tx.Exec(r.Context(), "INSERT INTO sessions(hash,user_id,expires_at,agent,amr) VALUES($1,$2,$3,$4,'hwk user qr')", digest(token), uid, time.Now().Add(12*time.Hour), truncate(r.UserAgent(), 300))
 	if e != nil {
-		fail(w, 500, "创建会话失败")
+		fail(w, 503, "暂时无法核验确认，请重试")
 		return
 	}
-	if old, e := r.Cookie("duoyu_session"); e == nil {
-		tx.Exec(r.Context(), "DELETE FROM sessions WHERE hash=$1", digest(old.Value))
-	}
-	tx.Exec(r.Context(), "UPDATE qr_logins SET status='consumed' WHERE id=$1", r.PathValue("id"))
-	if tx.Commit(r.Context()) != nil {
-		fail(w, 500, "登录失败")
+	_, e = tx.Exec(r.Context(), "UPDATE qr_logins SET status='consumed' WHERE id=$1", r.PathValue("id"))
+	if e != nil || s.commitLoginSession(w, r, tx, owner, "hwk user qr", "") != nil {
+		fail(w, 503, "登录暂不可用，请重试")
 		return
 	}
-	s.cookie(w, "duoyu_session", token, 43200)
-	s.audit(r.Context(), *uid, "login.success", "passkey.qr", true)
+	s.audit(r.Context(), owner, "login.success", "passkey.qr", true)
 	ok(w, map[string]string{"status": "approved"})
 }
 func (s *Server) qrContext(w http.ResponseWriter, r *http.Request) {
@@ -113,8 +116,12 @@ func (s *Server) qrContext(w http.ResponseWriter, r *http.Request) {
 	}
 	var label string
 	e := s.db.QueryRow(r.Context(), "UPDATE qr_logins SET status='scanned' WHERE ticket_hash=$1 AND status IN ('pending','scanned') AND expires_at>now() RETURNING label", digest(in.Ticket)).Scan(&label)
-	if e != nil {
+	if errors.Is(e, pgx.ErrNoRows) {
 		fail(w, 410, "二维码已过期或已使用")
+		return
+	}
+	if e != nil {
+		fail(w, 503, "暂时无法查询二维码，请重试")
 		return
 	}
 	ok(w, map[string]string{"label": label, "origin": s.origin})
@@ -139,7 +146,11 @@ func (s *Server) approveQR(w http.ResponseWriter, r *http.Request) {
 	}
 	// A password login or an old browser session cannot approve a QR login.
 	tag, e := s.db.Exec(r.Context(), `UPDATE qr_logins q SET status=$1,user_id=$2,approver_session=$3 WHERE ticket_hash=$4 AND status IN ('pending','scanned') AND expires_at>now() AND EXISTS(SELECT 1 FROM sessions s JOIN passkeys p ON p.id=s.passkey_id AND p.user_id=s.user_id AND p.qr_enabled WHERE s.hash=$3 AND s.user_id=$2 AND s.amr='hwk user' AND s.created_at>=q.created_at AND s.expires_at>now())`, status, u.ID, digest(c.Value), digest(in.Ticket))
-	if e != nil || tag.RowsAffected() != 1 {
+	if e != nil {
+		fail(w, 503, "暂时无法确认，请重试")
+		return
+	}
+	if tag.RowsAffected() != 1 {
 		fail(w, 403, "请先在账号与安全中添加 iPhone 扫码登录，再使用对应密钥验证；二维码过期时请重新扫码")
 		return
 	}

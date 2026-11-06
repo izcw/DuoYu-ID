@@ -345,9 +345,7 @@ function useTableImpl<TApiFn extends (params: any) => Promise<any>>(
       const response = await apiFn(requestParams)
 
       // 检查请求是否被取消
-      if (currentController.signal.aborted) {
-        throw new Error('请求已取消')
-      }
+      if (currentController.signal.aborted) return { records: [], total: 0, current: 1, size: 10 }
 
       // 使用响应适配器转换为标准格式
       const standardResponse = responseAdapter(response)
@@ -391,9 +389,7 @@ function useTableImpl<TApiFn extends (params: any) => Promise<any>>(
 
       return standardResponse
     } catch (err) {
-      if (err instanceof Error && err.message === '请求已取消') {
-        // 请求被取消，回到 idle 状态
-        loadingState.value = 'idle'
+      if (currentController.signal.aborted) {
         return { records: [], total: 0, current: 1, size: 10 }
       }
 
@@ -605,6 +601,7 @@ function useTableImpl<TApiFn extends (params: any) => Promise<any>>(
   const cancelRequest = (): void => {
     if (abortController) {
       abortController.abort()
+      loadingState.value = 'idle'
     }
     debouncedGetDataByPage.cancel()
   }

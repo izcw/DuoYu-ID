@@ -110,7 +110,7 @@
   import { Lock, Unlock } from '@element-plus/icons-vue'
   import type { FormInstance, FormRules } from 'element-plus'
   import { useI18n } from 'vue-i18n'
-  import CryptoJS from 'crypto-js'
+  import { createLockProof, matchesLockProof } from './lock-proof'
   import { useUserStore } from '@/store/modules/user'
   import { mittBus } from '@/utils/sys'
 
@@ -321,18 +321,8 @@
     }
   }
 
-  // 工具函数
-  const verifyPassword = (inputPassword: string, storedPassword: string): boolean => {
-    try {
-      const decryptedPassword = CryptoJS.AES.decrypt(storedPassword, ENCRYPT_KEY).toString(
-        CryptoJS.enc.Utf8
-      )
-      return inputPassword === decryptedPassword
-    } catch (error) {
-      console.error('密码解密失败:', error)
-      return false
-    }
-  }
+  let working = false
+  let disposed = false
 
   // 事件处理函数
   const handleKeydown = (event: KeyboardEvent) => {
@@ -349,54 +339,60 @@
   }
 
   const handleLock = async () => {
-    if (!formRef.value) return
-
-    await formRef.value.validate((valid, fields) => {
-      if (valid) {
-        const encryptedPassword = CryptoJS.AES.encrypt(formData.password, ENCRYPT_KEY).toString()
-        userStore.setLockStatus(true)
-        userStore.setLockPassword(encryptedPassword)
-        visible.value = false
-        formData.password = ''
-      } else {
-        console.error('表单验证失败:', fields)
-      }
-    })
+    if (!formRef.value || working) return
+    working = true
+    const owner = userInfo.value.userId
+    try {
+      if (!(await formRef.value.validate().catch(() => false))) return
+      const proof = await createLockProof(formData.password)
+      if (disposed || !userStore.isLogin || userInfo.value.userId !== owner) return
+      userStore.setLockPassword(proof)
+      userStore.setLockStatus(true)
+      visible.value = false
+      formData.password = ''
+    } catch {
+      ElMessage.error('暂时无法锁屏，请重试')
+    } finally {
+      working = false
+    }
   }
 
   const handleUnlock = async () => {
-    if (!unlockFormRef.value) return
+    if (!unlockFormRef.value || working) return
+    working = true
+    try {
+      if (!(await unlockFormRef.value.validate().catch(() => false))) return
+      const proof = lockPassword.value
+      const isValid = await matchesLockProof(unlockForm.password, proof, ENCRYPT_KEY)
+      if (disposed || proof !== lockPassword.value) return
 
-    await unlockFormRef.value.validate((valid, fields) => {
-      if (valid) {
-        const isValid = verifyPassword(unlockForm.password, lockPassword.value)
-
-        if (isValid) {
-          try {
-            userStore.setLockStatus(false)
-            userStore.setLockPassword('')
-            unlockForm.password = ''
-            visible.value = false
-            showDevToolsWarning.value = false
-          } catch (error) {
-            console.error('更新store失败:', error)
-          }
-        } else {
-          // 触发抖动动画
-          const inputElement = unlockInputRef.value?.$el
-          if (inputElement) {
-            inputElement.classList.add('shake-animation')
-            setTimeout(() => {
-              inputElement.classList.remove('shake-animation')
-            }, 300)
-          }
-          ElMessage.error(t('lockScreen.pwdError'))
+      if (isValid) {
+        try {
+          userStore.setLockStatus(false)
+          userStore.setLockPassword('')
           unlockForm.password = ''
+          visible.value = false
+          showDevToolsWarning.value = false
+        } catch (error) {
+          console.error('更新store失败:', error)
         }
       } else {
-        console.error('表单验证失败:', fields)
+        // 触发抖动动画
+        const inputElement = unlockInputRef.value?.$el
+        if (inputElement) {
+          inputElement.classList.add('shake-animation')
+          setTimeout(() => {
+            inputElement.classList.remove('shake-animation')
+          }, 300)
+        }
+        ElMessage.error(t('lockScreen.pwdError'))
+        unlockForm.password = ''
       }
-    })
+    } catch {
+      ElMessage.error('暂时无法解锁，请重试')
+    } finally {
+      working = false
+    }
   }
 
   const toLogin = () => {
@@ -440,6 +436,8 @@
   })
 
   onUnmounted(() => {
+    disposed = true
+    mittBus.off('openLockScreen', openLockScreen)
     document.removeEventListener('keydown', handleKeydown)
     document.body.style.overflow = 'auto'
     // 清理禁用开发者工具的事件监听器

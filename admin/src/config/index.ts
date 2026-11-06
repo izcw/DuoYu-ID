@@ -133,4 +133,3 @@ const appConfig: SystemConfig = {
 }
 
 export default Object.freeze(appConfig)
-

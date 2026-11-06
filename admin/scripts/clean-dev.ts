@@ -1,6 +1,7 @@
 // scripts/clean-dev.ts
 import fs from 'fs/promises'
 import path from 'path'
+import { fileURLToPath } from 'node:url'
 
 // 现代化颜色主题
 const theme = {
@@ -757,6 +758,12 @@ function createSuccessBanner() {
 
 // 主函数
 async function main() {
+  const adminRoot = await fs.realpath(fileURLToPath(new URL('..', import.meta.url)))
+  if ((await fs.realpath(process.cwd())) !== adminRoot) throw new Error('请在管理端目录内执行')
+  const registry = await fs.readFile(path.join(adminRoot, 'src/router/modules/index.ts'), 'utf8')
+  if (registry.includes('/duoyu/')) {
+    throw new Error('检测到多鱼定制路由，已停止上游模板清理。')
+  }
   // 清屏并显示横幅
   console.clear()
   createModernBanner()

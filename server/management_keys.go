@@ -137,7 +137,7 @@ func (s *Server) createManagedProject(w http.ResponseWriter, r *http.Request, au
 		}
 		var allowed bool
 		var currentHash string
-		if err := tx.QueryRow(ctx, "SELECT ($2 OR EXISTS(SELECT 1 FROM management_api_grants WHERE key_id=$3 AND app_id=$1)),secret_hash FROM apps WHERE id=$1", app, auth.All, auth.ID).Scan(&allowed, &currentHash); err != nil {
+		if err := tx.QueryRow(ctx, "SELECT "+managementProjectAccess+",secret_hash FROM apps WHERE id=$2", auth.ID, app).Scan(&allowed, &currentHash); err != nil {
 			fail(w, 503, "读取已创建项目失败")
 			return
 		}
@@ -178,7 +178,7 @@ func (s *Server) createManagedProject(w http.ResponseWriter, r *http.Request, au
 		secret = randomID()
 		secretHash = s.mac(secret)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO apps(id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, app, a.Name, a.Description, secretHash, a.Redirects, a.LogoutRedirects, a.Public, a.Enabled, a.Restricted, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI, a.Logo, a.AllowedOrigins, a.LoginMethods)
+	_, err = tx.Exec(ctx, `INSERT INTO apps(id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods,persistent_login) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, app, a.Name, a.Description, secretHash, a.Redirects, a.LogoutRedirects, a.Public, a.Enabled, a.Restricted, a.RefreshEnabled, a.Platform, a.BackchannelLogoutURI, a.Logo, a.AllowedOrigins, a.LoginMethods, a.PersistentLogin)
 	if err != nil {
 		fail(w, 503, "创建项目失败")
 		return

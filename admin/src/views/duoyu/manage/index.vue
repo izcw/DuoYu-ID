@@ -34,7 +34,9 @@
         /><el-table-column label="账号" min-width="220"
           ><template #default="{ row }"
             ><div style="display: flex; gap: 12px; align-items: center"
-              ><el-avatar :src="row.avatar || '/avatar-default.svg'" :size="36"><img src="/avatar-default.svg" alt="默认头像" /></el-avatar><div
+              ><el-avatar :src="row.avatar || '/avatar-default.svg'" :size="36"
+                ><img src="/avatar-default.svg" alt="默认头像" /></el-avatar
+              ><div
                 ><b>{{ row.name }}</b
                 ><span v-if="row.admin" class="dy-super-badge">超级管理员</span
                 ><div class="dy-code">ID {{ row.account_id }}</div
@@ -42,7 +44,32 @@
               ></div
             ></template
           ></el-table-column
-        ><el-table-column label="关联项目" min-width="230"><template #default="{ row }"><div v-if="row.projects?.length" class="dy-account-projects"><el-tooltip v-for="project in row.projects" :key="project.id" :content="project.name + ' · ' + project.role_name" placement="top"><router-link class="dy-account-project-link" :to="{ path: '/manage/apps/edit', query: { id: project.id } }" :aria-label="'管理项目：' + project.name"><el-image :src="project.logo?.startsWith('/project-logos/') ? project.logo : '/project-default.svg'" fit="contain" :alt="project.name"><template #error><img src="/project-default.svg" alt="默认项目图标" /></template></el-image></router-link></el-tooltip></div><span v-else class="dy-muted">暂未关联项目</span></template></el-table-column
+        ><el-table-column label="关联项目" min-width="230"
+          ><template #default="{ row }"
+            ><div v-if="row.projects?.length" class="dy-account-projects"
+              ><el-tooltip
+                v-for="project in row.projects"
+                :key="project.id"
+                :content="project.name + ' · ' + project.role_name"
+                placement="top"
+                ><router-link
+                  class="dy-account-project-link"
+                  :to="{ path: '/manage/apps/edit', query: { id: project.id } }"
+                  :aria-label="'管理项目：' + project.name"
+                  ><el-image
+                    :src="
+                      project.logo?.startsWith('/project-logos/')
+                        ? project.logo
+                        : '/project-default.svg'
+                    "
+                    fit="contain"
+                    :alt="project.name"
+                    ><template #error
+                      ><img
+                        src="/project-default.svg"
+                        alt="默认项目图标" /></template></el-image></router-link></el-tooltip></div
+            ><span v-else class="dy-muted">暂未关联项目</span></template
+          ></el-table-column
         ><el-table-column label="角色" width="140"
           ><template #default="{ row }"
             ><el-tag :type="row.admin ? 'warning' : 'info'">{{
@@ -133,7 +160,10 @@
           class-name="dy-actions"
           ><template #default="{ row }"
             ><el-button text @click="edit(row)">配置</el-button
-            ><el-button text @click="router.push({ path: '/manage/apps/roles', query: { id: row.id } })">角色配置</el-button
+            ><el-button
+              text
+              @click="router.push({ path: '/manage/apps/roles', query: { id: row.id } })"
+              >角色配置</el-button
             ><el-button text @click="grants(row)">准入名单</el-button
             ><el-button
               text
@@ -246,7 +276,8 @@
   import { ElMessage, ElMessageBox } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
   import { api, dateText } from '@/api/duoyu'
-  const superAdmin = useUserStore().info.roles?.includes('R_SUPER')
+  const user = useUserStore()
+  const superAdmin = computed(() => user.info.roles?.includes('R_SUPER'))
   const route = useRoute(),
     router = useRouter(),
     kind = computed(() => route.path.split('/').pop() || 'users')

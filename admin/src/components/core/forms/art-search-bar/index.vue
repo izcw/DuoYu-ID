@@ -251,7 +251,7 @@
 
   const emit = defineEmits<SearchBarEmits>()
 
-  const modelValue = defineModel<Record<string, any>>({ default: {} })
+  const modelValue = defineModel<Record<string, any>>({ default: () => ({}) })
   const initialModelValue = ref<Record<string, any>>({})
 
   // 保存组件初始化时的表单快照，用于 reset 时恢复默认筛选条件。
@@ -328,9 +328,11 @@
     return value === '' ? undefined : value
   }
 
-  const getFieldValue = (key: string) => modelValue.value[key]
+  const getFieldValue = (key: string) =>
+    Object.hasOwn(modelValue.value, key) ? modelValue.value[key] : undefined
 
   const setFieldValue = (key: string, value: unknown) => {
+    if (['__proto__', 'prototype', 'constructor'].includes(key)) return
     const normalizedValue = normalizeFieldValue(value)
 
     if (normalizedValue === undefined) {

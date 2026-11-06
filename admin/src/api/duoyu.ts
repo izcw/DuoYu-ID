@@ -12,11 +12,16 @@ export async function api<T = any>(
     headers: { 'X-Duoyu-Request': '1', ...(form ? {} : { 'Content-Type': 'application/json' }) },
     body: data === undefined ? undefined : form ? data : JSON.stringify(data)
   })
-  const result = await response.json()
+  if (response.status === 401) window.location.assign('/login')
+  const result = await response.json().catch(() => {
+    if (response.ok) throw new Error('服务返回了无效响应，请重试')
+    return null
+  })
   if (!response.ok) {
-    if (response.status === 401) window.location.assign('/login')
     throw new Error(
-      (result.msg || '请求失败') +
+      (typeof result?.msg === 'string' && result.msg
+        ? result.msg
+        : `请求失败（HTTP ${response.status}）`) +
         (response.headers.get('X-Request-ID')
           ? '（请求 ' + response.headers.get('X-Request-ID') + '）'
           : '')

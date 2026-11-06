@@ -109,13 +109,22 @@ func (s *Server) beginAuthenticator(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "请求格式错误")
 		return
 	}
-	if s.limited(r, "totp-setup:"+u.ID, 10, time.Hour) || !s.consumeCode(r.Context(), u.Email, "email", in.Code) {
+	if s.limited(r, "totp-setup:"+u.ID, 10, time.Hour) {
 		fail(w, 400, "邮箱验证码无效或已过期")
 		return
 	}
 	c, err := r.Cookie("duoyu_session")
 	if err != nil {
 		fail(w, 401, "请重新登录")
+		return
+	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		fail(w, 503, "绑定暂不可用")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if !s.authorizeChange(w, r.Context(), tx, "email", emailCode{u.Email, in.Code}) || !lockCredentialSession(w, r, tx, u) {
 		return
 	}
 	secret := make([]byte, 20)
@@ -135,7 +144,7 @@ func (s *Server) beginAuthenticator(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "生成二维码失败")
 		return
 	}
-	tag, err := s.db.Exec(r.Context(), `INSERT INTO authenticators(user_id,secret,setup_session,expires_at) VALUES($1,$2,$3,now()+interval '10 minutes') ON CONFLICT(user_id) DO UPDATE SET secret=EXCLUDED.secret,setup_session=EXCLUDED.setup_session,expires_at=EXCLUDED.expires_at,failures=0,locked_until='-infinity',last_step=-1 WHERE NOT authenticators.active`, u.ID, encrypted, digest(c.Value))
+	tag, err := tx.Exec(r.Context(), `INSERT INTO authenticators(user_id,secret,setup_session,expires_at) VALUES($1,$2,$3,now()+interval '10 minutes') ON CONFLICT(user_id) DO UPDATE SET secret=EXCLUDED.secret,setup_session=EXCLUDED.setup_session,expires_at=EXCLUDED.expires_at,failures=0,locked_until='-infinity',last_step=-1 WHERE NOT authenticators.active`, u.ID, encrypted, digest(c.Value))
 	if err != nil {
 		fail(w, 503, "绑定暂不可用")
 		return
@@ -144,17 +153,16 @@ func (s *Server) beginAuthenticator(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, "已绑定身份验证器，请先解绑")
 		return
 	}
+	if tx.Commit(r.Context()) != nil {
+		fail(w, 503, "绑定暂不可用")
+		return
+	}
 	s.audit(r.Context(), u.ID, "authenticator.setup", "", true)
 	ok(w, map[string]string{"secret": encoded, "image": "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)})
 }
 
 // The row lock makes time-step consumption and recovery codes single-use, including concurrent requests.
-func (s *Server) verifyAuthenticator(ctx context.Context, uid, code, setupSession string, recovery bool, operation string) ([]string, bool, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback(ctx)
+func (s *Server) verifyAuthenticatorTx(ctx context.Context, tx pgx.Tx, uid, code, setupSession string, recovery bool, operation string) ([]string, bool, error) {
 	var encrypted []byte
 	var active bool
 	var session string
@@ -162,7 +170,7 @@ func (s *Server) verifyAuthenticator(ctx context.Context, uid, code, setupSessio
 	var last int64
 	var hashes []string
 	var locked bool
-	err = tx.QueryRow(ctx, `SELECT secret,active,setup_session,expires_at,last_step,recovery_hashes,locked_until>now() FROM authenticators WHERE user_id=$1 FOR UPDATE`, uid).Scan(&encrypted, &active, &session, &expires, &last, &hashes, &locked)
+	err := tx.QueryRow(ctx, `SELECT secret,active,setup_session,expires_at,last_step,recovery_hashes,locked_until>clock_timestamp() FROM authenticators WHERE user_id=$1 FOR UPDATE`, uid).Scan(&encrypted, &active, &session, &expires, &last, &hashes, &locked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -194,7 +202,7 @@ func (s *Server) verifyAuthenticator(ctx context.Context, uid, code, setupSessio
 		if err != nil {
 			return nil, false, err
 		}
-		return nil, false, tx.Commit(ctx)
+		return nil, false, nil
 	}
 	codes := []string{}
 	if setup {
@@ -213,10 +221,7 @@ func (s *Server) verifyAuthenticator(ctx context.Context, uid, code, setupSessio
 		if _, err = tx.Exec(ctx, "DELETE FROM authenticators WHERE user_id=$1", uid); err != nil {
 			return nil, false, err
 		}
-		if _, err = tx.Exec(ctx, "DELETE FROM sessions WHERE user_id=$1", uid); err != nil {
-			return nil, false, err
-		}
-		if _, err = tx.Exec(ctx, "DELETE FROM access_tokens WHERE user_id=$1", uid); err != nil {
+		if err = revokeAccountCredentials(ctx, tx, uid); err != nil {
 			return nil, false, err
 		}
 	} else {
@@ -228,8 +233,7 @@ func (s *Server) verifyAuthenticator(ctx context.Context, uid, code, setupSessio
 			return nil, false, err
 		}
 	}
-	err = tx.Commit(ctx)
-	return codes, err == nil, err
+	return codes, true, nil
 }
 func (s *Server) finishAuthenticator(w http.ResponseWriter, r *http.Request) {
 	u, yes := s.require(w, r, false)
@@ -249,7 +253,19 @@ func (s *Server) finishAuthenticator(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "请重新登录")
 		return
 	}
-	codes, valid, err := s.verifyAuthenticator(r.Context(), u.ID, in.Code, digest(c.Value), false, "activate")
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		fail(w, 503, "绑定暂不可用")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if !lockCredentialSession(w, r, tx, u) {
+		return
+	}
+	codes, valid, err := s.verifyAuthenticatorTx(r.Context(), tx, u.ID, in.Code, digest(c.Value), false, "activate")
+	if err == nil {
+		err = tx.Commit(r.Context())
+	}
 	if err != nil {
 		fail(w, 503, "绑定暂不可用")
 		return
@@ -275,17 +291,40 @@ func (s *Server) deleteAuthenticator(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "请求格式错误")
 		return
 	}
-	if !s.consumeCode(r.Context(), u.Email, "email", in.EmailCode) {
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		fail(w, 503, "解绑暂不可用")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	emailValid, err := s.matchEmailCodes(r.Context(), tx, "email", emailCode{u.Email, in.EmailCode})
+	if err == nil && !emailValid {
+		err = tx.Commit(r.Context())
+	}
+	if err != nil {
+		fail(w, 503, "解绑暂不可用")
+		return
+	}
+	if !emailValid {
 		fail(w, 400, "邮箱验证码无效或已过期")
 		return
 	}
-	_, valid, err := s.verifyAuthenticator(r.Context(), u.ID, in.Code, "", in.Recovery, "delete")
+	if !lockCredentialSession(w, r, tx, u) {
+		return
+	}
+	_, valid, err := s.verifyAuthenticatorTx(r.Context(), tx, u.ID, in.Code, "", in.Recovery, "delete")
+	if valid && err == nil {
+		_, err = tx.Exec(r.Context(), "DELETE FROM challenges WHERE email=$1 AND purpose='email'", u.Email)
+	}
+	if err == nil {
+		err = tx.Commit(r.Context())
+	}
 	if err != nil {
 		fail(w, 503, "解绑暂不可用")
 		return
 	}
 	if !valid {
-		fail(w, 400, "动态码或恢复码无效，请使用新的邮箱验证码重试")
+		fail(w, 400, "动态码或恢复码无效，请检查后重试")
 		return
 	}
 	s.cookie(w, "duoyu_session", "", -1)
@@ -324,7 +363,26 @@ func (s *Server) loginAuthenticator(w http.ResponseWriter, r *http.Request) {
 	if !s.checkLoginProject(w, r, email, in.AuthRequestID) {
 		return
 	}
-	_, valid, err := s.verifyAuthenticator(r.Context(), uid, in.Code, "", in.Recovery, "login")
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		fail(w, 503, "登录暂不可用")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var current string
+	err = tx.QueryRow(r.Context(), "SELECT id FROM users WHERE id=$1 AND email=$2 AND (email=$3 OR account_id=$3) AND enabled FOR SHARE", uid, email, account).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		fail(w, 401, "账号已变更，请重新登录")
+		return
+	}
+	if err != nil {
+		fail(w, 503, "登录暂不可用")
+		return
+	}
+	_, valid, err := s.verifyAuthenticatorTx(r.Context(), tx, uid, in.Code, "", in.Recovery, "login")
+	if err == nil && !valid {
+		err = tx.Commit(r.Context())
+	}
 	if err != nil {
 		fail(w, 503, "登录暂不可用")
 		return
@@ -334,7 +392,7 @@ func (s *Server) loginAuthenticator(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "账号或动态码无效、已使用，或暂时锁定；连续错误 5 次请等待 10 分钟")
 		return
 	}
-	if err = s.newSession(w, r, uid, "otp totp"); err != nil {
+	if err = s.commitLoginSession(w, r, tx, uid, "otp totp", ""); err != nil {
 		fail(w, 503, "创建会话失败")
 		return
 	}

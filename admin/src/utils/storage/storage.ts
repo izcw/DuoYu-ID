@@ -32,7 +32,6 @@
  * @module utils/storage/storage
  * @author Art Design Pro Team
  */
-import { router } from '@/router'
 import { useUserStore } from '@/store/modules/user'
 import { StorageConfig } from '@/utils/storage/storage-config'
 
@@ -111,9 +110,7 @@ class StorageCompatibilityManager {
   private performSystemLogout(): void {
     setTimeout(() => {
       try {
-        localStorage.clear()
         useUserStore().logOut()
-        router.push({ name: 'Login' })
         console.info('[Storage] 已执行系统登出')
       } catch (error) {
         console.error('[Storage] 系统登出失败:', error)
@@ -199,16 +196,7 @@ class StorageCompatibilityManager {
    */
   checkCompatibility(requireAuth: boolean = false): boolean {
     try {
-      const isValid = this.validateStorageData(requireAuth)
-      const isEmpty = this.isStorageEmpty()
-
-      if (isValid || isEmpty) {
-        // console.debug('[Storage] 存储兼容性检查通过')
-        return true
-      }
-
-      console.warn('[Storage] 存储兼容性检查失败')
-      return false
+      return this.validateStorageData(requireAuth)
     } catch (error) {
       console.error('[Storage] 兼容性检查异常:', error)
       return false

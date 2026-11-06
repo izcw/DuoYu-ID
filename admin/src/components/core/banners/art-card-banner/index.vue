@@ -10,8 +10,9 @@
         <p class="m-0 text-sm text-g-600">{{ description }}</p>
       </div>
       <div class="flex-c gap-3">
-        <div
+        <button
           v-if="cancelButton?.show"
+          type="button"
           class="inline-block h-9 px-3 text-sm/9 c-p select-none rounded-md border border-g-300"
           :style="{
             backgroundColor: cancelButton?.color,
@@ -20,24 +21,22 @@
           @click="handleCancel"
         >
           {{ cancelButton?.text }}
-        </div>
-        <div
+        </button>
+        <button
           v-if="button?.show"
+          type="button"
           class="inline-block h-9 px-3 text-sm/9 c-p select-none rounded-md"
           :style="{ backgroundColor: button?.color, color: button?.textColor }"
           @click="handleClick"
         >
           {{ button?.text }}
-        </div>
+        </button>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-  // 导入默认图标
-  import defaultIcon from '@imgs/3d/icon1.webp'
-
   defineOptions({ name: 'ArtCardBanner' })
 
   // 定义卡片横幅组件的属性接口
@@ -77,7 +76,7 @@
   // 定义组件属性默认值
   withDefaults(defineProps<CardBannerProps>(), {
     height: '24rem',
-    image: defaultIcon,
+    image: '/logo.png',
     title: '',
     description: '',
     // 主按钮默认配置

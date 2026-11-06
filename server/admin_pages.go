@@ -11,7 +11,7 @@ func (s *Server) adminAppDetail(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
 		return
 	}
-	s.queryList(w, r, "SELECT id,name,description,redirects,logout_redirects,public,enabled,restricted,created_at,platform,refresh_enabled,backchannel_logout_uri,logo,allowed_origins,login_methods FROM apps WHERE id=$1", r.PathValue("id"))
+	s.queryList(w, r, "SELECT id,name,description,redirects,logout_redirects,public,enabled,restricted,created_at,platform,refresh_enabled,backchannel_logout_uri,logo,allowed_origins,login_methods,persistent_login FROM apps WHERE id=$1", r.PathValue("id"))
 }
 func (s *Server) adminUserDetail(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {

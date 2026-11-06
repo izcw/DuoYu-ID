@@ -3,7 +3,7 @@ package main
 func (s *Server) extendManagementOpenAPI(spec map[string]any) {
 	paths := spec["paths"].(map[string]any)
 	schemes := spec["components"].(map[string]any)["securitySchemes"].(map[string]any)
-	schemes["ProjectManagementKey"] = map[string]any{"type": "http", "scheme": "bearer", "description": "独立 dy_mgmt_ 凭证，不能使用业务邮件 Key 或 OIDC client_secret。仅服务端或 CLI 使用。"}
+	schemes["ProjectManagementKey"] = map[string]any{"type": "http", "scheme": "bearer", "description": "使用具有所需管理权限和项目授权的开发者 API 凭证。仅限服务端或 CLI 调用。"}
 	security := []map[string]any{{"ProjectManagementKey": []string{}}}
 	responses := map[string]any{}
 	for status, description := range map[string]string{"200": "成功，JSON envelope {code,msg,data}", "400": "字段错误", "401": "管理凭证无效/过期/撤销", "403": "权限或项目范围不足，或请求携带 Origin", "409": "创建幂等键对应的参数发生变化", "410": "项目已经创建，但24小时结果重放窗口已过期", "412": "项目版本已变化，重新 GET 后合并", "428": "缺少 If-Match", "429": "每个管理凭证每分钟最多120次", "503": "服务暂不可用"} {
@@ -13,7 +13,7 @@ func (s *Server) extendManagementOpenAPI(spec map[string]any) {
 		return map[string]any{"type": "string", "description": description}
 	}
 	array := map[string]any{"type": "array", "items": map[string]string{"type": "string"}}
-	properties := map[string]any{"name": map[string]any{"type": "string", "maxLength": 60}, "description": stringSchema("最多1000 UTF-8字节"), "logo": stringSchema("必须使用上传接口返回的 /project-logos/...png"), "public": map[string]string{"type": "boolean", "description": "创建后不可修改"}, "platform": map[string]any{"type": "string", "enum": []string{"web", "spa", "native", "extension"}}, "enabled": map[string]any{"type": "boolean", "default": true}, "restricted": map[string]any{"type": "boolean", "default": false}, "refresh_enabled": map[string]any{"type": "boolean", "default": false}, "redirects": array, "logout_redirects": array, "allowed_origins": array, "login_methods": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": allLoginMethods()}}, "backchannel_logout_uri": stringSchema("后台退出通知端点，空字符串表示不启用")}
+	properties := map[string]any{"name": map[string]any{"type": "string", "maxLength": 60}, "description": stringSchema("最多1000 UTF-8字节"), "logo": stringSchema("必须使用上传接口返回的 /project-logos/...png"), "public": map[string]string{"type": "boolean", "description": "创建后不可修改"}, "platform": map[string]any{"type": "string", "enum": []string{"web", "spa", "native", "extension"}}, "enabled": map[string]any{"type": "boolean", "default": true}, "restricted": map[string]any{"type": "boolean", "default": false}, "persistent_login": map[string]any{"type": "boolean", "default": false}, "refresh_enabled": map[string]any{"type": "boolean", "default": false}, "redirects": array, "logout_redirects": array, "allowed_origins": array, "login_methods": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": allLoginMethods()}}, "backchannel_logout_uri": stringSchema("后台退出通知端点，空字符串表示不启用")}
 	jsonBody := func(props map[string]any, required []string) map[string]any {
 		schema := map[string]any{"type": "object", "additionalProperties": false, "properties": props}
 		if len(required) > 0 {

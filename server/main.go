@@ -68,6 +68,13 @@ func env(k, d string) string {
 	return d
 }
 func main() {
+	failed := false
+	// Report failure only after workers, requests and the database have closed.
+	defer func() {
+		if failed {
+			os.Exit(1)
+		}
+	}()
 	s, e := newServer()
 	if e != nil {
 		slog.Error("startup failed", "error", e)
@@ -85,6 +92,7 @@ func main() {
 	var workers sync.WaitGroup
 	role := env("DUOYU_ROLE", "combined")
 	if role != "api" && role != "worker" && role != "combined" {
+		failed = true
 		slog.Error("invalid DUOYU_ROLE")
 		return
 	}
@@ -98,20 +106,16 @@ func main() {
 		<-ctx.Done()
 		return
 	}
-	go func() {
-		<-ctx.Done()
-		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		srv.Shutdown(c)
-	}()
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
+		failed = true
 		slog.Error("listen failed", "address", srv.Addr, "error", err)
 		return
 	}
 	s.logAccessAddresses(srv.Addr)
 	slog.Info("DuoYu ID ready", "origin", s.origin)
-	if e = srv.Serve(listener); e != nil && !errors.Is(e, http.ErrServerClosed) {
+	if e = serveHTTP(ctx, srv, listener, 10*time.Second); e != nil && !errors.Is(e, http.ErrServerClosed) {
+		failed = true
 		slog.Error("server stopped", "error", e)
 	}
 }
@@ -450,25 +454,26 @@ func (s *Server) require(w http.ResponseWriter, r *http.Request, admin bool) (Us
 func (s *Server) cookie(w http.ResponseWriter, name, val string, age int) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: val, Path: "/", HttpOnly: true, Secure: !s.dev, SameSite: http.SameSiteLaxMode, MaxAge: age})
 }
-func (s *Server) newSession(w http.ResponseWriter, r *http.Request, id, amr string, credentialIDs ...string) error {
-	credentialID := ""
-	if len(credentialIDs) > 0 {
-		credentialID = credentialIDs[0]
-	}
-	v := randomID()
+func (s *Server) issueEmailSession(w http.ResponseWriter, r *http.Request, id, amr, verifiedEmail, passwordHash string) error {
 	tx, e := s.db.Begin(r.Context())
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback(r.Context())
-	// Serialize authenticator session creation with unbinding and account disable.
-	if strings.Contains(" "+amr+" ", " totp ") {
-		var current string
-		if err := tx.QueryRow(r.Context(), "SELECT u.id FROM users u JOIN authenticators a ON a.user_id=u.id WHERE u.id=$1 AND u.enabled AND a.active FOR SHARE OF u,a", id).Scan(&current); err != nil {
-			return err
-		}
+	// Bind an email login to the account and password generation verified by
+	// the request. A subsequent credential change must revoke this session.
+	var owner string
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM users WHERE id=$1 AND email=$2 AND enabled
+			AND ($3<>'pwd' OR password_hash=$4) FOR SHARE`, id, verifiedEmail, amr, passwordHash).Scan(&owner); err != nil {
+		return err
 	}
+	return s.commitLoginSession(w, r, tx, id, amr, "")
+}
 
+// Credential use and the replacement session commit together. Only publish
+// the cookie after PostgreSQL has accepted both.
+func (s *Server) commitLoginSession(w http.ResponseWriter, r *http.Request, tx pgx.Tx, id, amr, credentialID string) error {
+	v := randomID()
 	if c, e := r.Cookie("duoyu_session"); e == nil {
 		if _, err := tx.Exec(r.Context(), "DELETE FROM sessions WHERE hash=$1", digest(c.Value)); err != nil {
 			return err
@@ -479,7 +484,7 @@ func (s *Server) newSession(w http.ResponseWriter, r *http.Request, id, amr stri
 			return err
 		}
 	}
-	_, e = tx.Exec(r.Context(), "INSERT INTO sessions(hash,user_id,expires_at,agent,amr,passkey_id) VALUES($1,$2,$3,$4,$5,$6)", digest(v), id, time.Now().Add(12*time.Hour), truncate(r.UserAgent(), 300), amr, credentialID)
+	_, e := tx.Exec(r.Context(), "INSERT INTO sessions(hash,user_id,expires_at,agent,amr,passkey_id) VALUES($1,$2,$3,$4,$5,$6)", digest(v), id, time.Now().Add(12*time.Hour), truncate(r.UserAgent(), 300), amr, credentialID)
 	if e == nil {
 		e = tx.Commit(r.Context())
 	}

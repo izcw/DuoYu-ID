@@ -18,6 +18,7 @@ import (
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/jackc/pgx/v5"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"github.com/zitadel/oidc/v3/pkg/op"
 )
@@ -38,6 +39,7 @@ type App struct {
 	Restricted           bool      `json:"restricted"`
 	Created              time.Time `json:"created_at"`
 	Development          bool      `json:"-"`
+	PersistentLogin      bool      `json:"persistent_login"`
 	RefreshEnabled       bool      `json:"refresh_enabled"`
 	Platform             string    `json:"platform"`
 	BackchannelLogoutURI string    `json:"backchannel_logout_uri"`
@@ -93,6 +95,8 @@ type AuthRequest struct {
 	Created, Authenticated time.Time
 	Completed              bool
 	SessionHash            string
+	LoginMethod            string   `json:",omitempty"`
+	RegisteredRedirects    []string `json:",omitempty"`
 }
 
 func (a *AuthRequest) GetID() string          { return a.ID }
@@ -114,7 +118,7 @@ func (a *AuthRequest) GetSubject() string                 { return a.UserID }
 func (a *AuthRequest) Done() bool                         { return a.Completed }
 func (s *Server) app(ctx context.Context, id string) (a *App, e error) {
 	a = &App{Development: s.dev}
-	e = s.db.QueryRow(ctx, "SELECT id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,created_at,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods,management_revision FROM apps WHERE id=$1", id).Scan(&a.ID, &a.Name, &a.Description, &a.Secret, &a.Redirects, &a.LogoutRedirects, &a.Public, &a.Enabled, &a.Restricted, &a.Created, &a.RefreshEnabled, &a.Platform, &a.BackchannelLogoutURI, &a.Logo, &a.AllowedOrigins, &a.LoginMethods, &a.Revision)
+	e = s.db.QueryRow(ctx, "SELECT id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,created_at,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods,management_revision,persistent_login FROM apps WHERE id=$1", id).Scan(&a.ID, &a.Name, &a.Description, &a.Secret, &a.Redirects, &a.LogoutRedirects, &a.Public, &a.Enabled, &a.Restricted, &a.Created, &a.RefreshEnabled, &a.Platform, &a.BackchannelLogoutURI, &a.Logo, &a.AllowedOrigins, &a.LoginMethods, &a.Revision, &a.PersistentLogin)
 	if !projectLogoPath.MatchString(a.Logo) {
 		a.Logo = ""
 	}
@@ -134,23 +138,34 @@ func (s *Server) AuthorizeClientIDSecret(ctx context.Context, id, secret string)
 	return nil
 }
 func (s *Server) allowed(ctx context.Context, uid, aid string) bool {
-	u, e := s.user(ctx, uid)
-	if e != nil || !u.Enabled {
-		return false
-	}
-	a, e := s.app(ctx, aid)
-	if e != nil {
-		return false
-	}
-	if blocked, err := s.projectBlocked(ctx, u.Email, aid); err != nil || blocked {
-		return false
-	}
-	if !a.Restricted {
-		return true
-	}
 	var yes bool
-	s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM grants WHERE user_id=$1 AND app_id=$2)", uid, aid).Scan(&yes)
-	return yes
+	return s.db.QueryRow(ctx, projectAccessSQL, uid, aid).Scan(&yes) == nil && yes
+}
+
+const projectAccessSQL = `SELECT EXISTS(SELECT 1 FROM apps a, users u
+	WHERE a.id=$2 AND u.id=$1 AND a.enabled AND u.enabled
+	AND NOT EXISTS (SELECT 1 FROM app_blacklist b WHERE b.app_id=a.id AND (b.user_id=u.id OR b.email=u.email))
+	AND (NOT a.restricted OR EXISTS(SELECT 1 FROM grants g WHERE g.app_id=a.id AND g.user_id=u.id)))`
+
+// Hold both policy owners through token commit. The separate access query gets
+// a fresh snapshot after any pending grant, blacklist or account edit completes.
+func tokenPolicy(ctx context.Context, tx pgx.Tx, uid, aid string, amr *string) (policy App, err error) {
+	err = tx.QueryRow(ctx, `SELECT a.refresh_enabled,a.persistent_login,a.login_methods FROM apps a, users u
+		WHERE a.id=$2 AND u.id=$1 FOR SHARE OF a,u`, uid, aid).Scan(&policy.RefreshEnabled, &policy.PersistentLogin, &policy.LoginMethods)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return policy, oidc.ErrInvalidGrant()
+	}
+	if err != nil {
+		return policy, err
+	}
+	var allowed bool
+	if err = tx.QueryRow(ctx, projectAccessSQL, uid, aid).Scan(&allowed); err != nil {
+		return policy, err
+	}
+	if !allowed || amr != nil && !amrAllowedByMethods(*amr, policy.LoginMethods) {
+		return policy, oidc.ErrInvalidGrant()
+	}
+	return policy, nil
 }
 func (s *Server) CreateAuthRequest(ctx context.Context, r *oidc.AuthRequest, _ string) (op.AuthRequest, error) {
 	if r.ResponseType != oidc.ResponseTypeCode || r.CodeChallengeMethod != oidc.CodeChallengeMethodS256 || len(r.CodeChallenge) != 43 {
@@ -161,37 +176,67 @@ func (s *Server) CreateAuthRequest(ctx context.Context, r *oidc.AuthRequest, _ s
 			return nil, oidc.ErrInvalidScope()
 		}
 	}
-	if slices.Contains(r.Scopes, "offline_access") {
-		app, e := s.app(ctx, r.ClientID)
-		if e != nil || !app.RefreshEnabled {
-			return nil, oidc.ErrInvalidScope().WithDescription("offline_access is not enabled for this client")
-		}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	app := App{Development: s.dev}
+	err = tx.QueryRow(ctx, `SELECT public,platform,redirects,refresh_enabled FROM apps WHERE id=$1 AND enabled FOR SHARE`, r.ClientID).Scan(&app.Public, &app.Platform, &app.Redirects, &app.RefreshEnabled)
+	if err != nil {
+		return nil, err
+	}
+	if err := op.ValidateAuthReqRedirectURI(&app, r.RedirectURI, r.ResponseType); err != nil {
+		return nil, err
+	}
+	if slices.Contains(r.Scopes, "offline_access") && !app.RefreshEnabled {
+		return nil, oidc.ErrInvalidScope().WithDescription("offline_access is not enabled for this client")
 	}
 	a := &AuthRequest{Request: *r, ID: randomID(), Created: time.Now()}
+	if app.Platform == "native" {
+		// Retain the registrations that match a dynamically assigned loopback
+		// port, using the same rules as the provider.
+		for _, registered := range app.Redirects {
+			candidate := app
+			candidate.Redirects = []string{registered}
+			if op.ValidateAuthReqRedirectURI(&candidate, r.RedirectURI, r.ResponseType) == nil {
+				a.RegisteredRedirects = append(a.RegisteredRedirects, registered)
+			}
+		}
+	}
 	if slices.Contains(r.Prompt, "none") {
 		hash, _ := ctx.Value(sessionContextKey{}).(string)
-		e := s.db.QueryRow(ctx, "SELECT user_id,created_at,amr FROM sessions WHERE hash=$1 AND expires_at>now()", hash).Scan(&a.UserID, &a.Authenticated, &a.AMR)
-		if e != nil || needsReauthentication(a, a.Authenticated) || !s.loginAMRAllowed(ctx, r.ClientID, a.AMR) {
+		e := tx.QueryRow(ctx, "SELECT user_id,created_at,amr FROM sessions WHERE hash=$1 AND expires_at>now()", hash).Scan(&a.UserID, &a.Authenticated, &a.AMR)
+		if e != nil || needsReauthentication(a, a.Authenticated) {
 			return nil, oidc.ErrLoginRequired()
 		}
-		if !s.allowed(ctx, a.UserID, r.ClientID) {
+		policy, err := tokenPolicy(ctx, tx, a.UserID, r.ClientID, nil)
+		if err != nil {
 			return nil, oidc.ErrAccessDenied()
+		}
+		if !amrAllowedByMethods(a.AMR, policy.LoginMethods) {
+			return nil, oidc.ErrLoginRequired()
 		}
 		// Silent authorization requires prior successful authorization to this app.
 		var prior bool
-		s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM access_tokens WHERE user_id=$1 AND app_id=$2 AND scopes @> $3::text[])", a.UserID, r.ClientID, []string(r.Scopes)).Scan(&prior)
+		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM access_tokens WHERE user_id=$1 AND app_id=$2 AND scopes @> $3::text[])", a.UserID, r.ClientID, []string(r.Scopes)).Scan(&prior); err != nil {
+			return nil, err
+		}
 		if !prior || slices.Contains(r.Scopes, "offline_access") {
 			return nil, oidc.ErrInteractionRequired()
 		}
 		a.Completed = true
 		a.SessionHash = hash
+		a.LoginMethod = loginMethodForAMR(a.AMR)
 	}
 	b, e := json.Marshal(a)
 	if e != nil {
 		return nil, e
 	}
-	_, e = s.db.Exec(ctx, "INSERT INTO auth_requests(id,body,expires_at) VALUES($1,$2,$3)", a.ID, b, time.Now().Add(10*time.Minute))
-	return a, e
+	if _, e = tx.Exec(ctx, "INSERT INTO auth_requests(id,body,expires_at) VALUES($1,$2,$3)", a.ID, b, time.Now().Add(10*time.Minute)); e != nil {
+		return nil, e
+	}
+	return a, tx.Commit(ctx)
 }
 func (s *Server) AuthRequestByID(ctx context.Context, id string) (op.AuthRequest, error) {
 	var b []byte
@@ -227,14 +272,25 @@ func (s *Server) DeleteAuthRequest(ctx context.Context, id string) error {
 	_, e := s.db.Exec(ctx, "DELETE FROM auth_requests WHERE id=$1", id)
 	return e
 }
-func (s *Server) CreateAccessToken(ctx context.Context, r op.TokenRequest) (string, time.Time, error) {
-	if a, ok := r.(*AuthRequest); ok && !s.loginAMRAllowed(ctx, a.GetClientID(), a.AMR) {
-		return "", time.Time{}, errors.New("login method disabled")
+
+// The provider consumes code_hash before entering token issuance. Recheck
+// the authorization row while tokenPolicy holds the project lock so a policy
+// change between those two calls cannot revive an already consumed code.
+func requireCurrentAuthorization(ctx context.Context, tx pgx.Tx, id string) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM auth_requests WHERE id=$1 AND expires_at>now() AND body->>'Completed'='true')", id).Scan(&exists); err != nil {
+		return err
 	}
+	if !exists {
+		return oidc.ErrInvalidGrant()
+	}
+	return nil
+}
+func (s *Server) CreateAccessToken(ctx context.Context, r op.TokenRequest) (string, time.Time, error) {
 	id := randomID()
 	expiry := time.Now().Add(5 * time.Minute)
 	aud := r.GetAudience()
-	if len(aud) != 1 || !s.allowed(ctx, r.GetSubject(), aud[0]) {
+	if len(aud) != 1 {
 		return "", expiry, errors.New("access denied")
 	}
 	tx, e := s.db.Begin(ctx)
@@ -243,8 +299,20 @@ func (s *Server) CreateAccessToken(ctx context.Context, r op.TokenRequest) (stri
 	}
 	defer tx.Rollback(ctx)
 	var sessionHash any
-	if a, ok := r.(*AuthRequest); ok && a.SessionHash != "" {
-		sessionHash = a.SessionHash
+	var amr *string
+	if a, ok := r.(*AuthRequest); ok {
+		amr = &a.AMR
+		if a.SessionHash != "" {
+			sessionHash = a.SessionHash
+		}
+	}
+	if _, e = tokenPolicy(ctx, tx, r.GetSubject(), aud[0], amr); e != nil {
+		return "", expiry, e
+	}
+	if a, ok := r.(*AuthRequest); ok {
+		if e := requireCurrentAuthorization(ctx, tx, a.ID); e != nil {
+			return "", expiry, e
+		}
 	}
 	if _, e = tx.Exec(ctx, "INSERT INTO access_tokens(id,user_id,app_id,scopes,expires_at,session_hash) VALUES($1,$2,$3,$4,$5,$6)", id, r.GetSubject(), aud[0], r.GetScopes(), expiry, sessionHash); e != nil {
 		return "", expiry, e
@@ -566,20 +634,12 @@ func (s *Server) completeAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a := raw.(*AuthRequest)
-	if !s.allowed(r.Context(), u.ID, a.GetClientID()) {
-		fail(w, 403, "你尚无权访问该项目")
-		return
-	}
 	cookie, _ := r.Cookie("duoyu_session")
 	var created time.Time
 	var amr string
 	e = s.db.QueryRow(r.Context(), "SELECT created_at,amr FROM sessions WHERE hash=$1", digest(cookie.Value)).Scan(&created, &amr)
 	if e != nil {
 		fail(w, 401, "会话已失效")
-		return
-	}
-	if !s.loginAMRAllowed(r.Context(), a.GetClientID(), amr) {
-		fail(w, 403, "当前登录方式未在该项目启用，请使用其他方式重新登录")
 		return
 	}
 	if needsReauthentication(a, created) {
@@ -590,11 +650,40 @@ func (s *Server) completeAuth(w http.ResponseWriter, r *http.Request) {
 	a.Completed = true
 	a.Authenticated = created
 	a.AMR = amr
+	a.LoginMethod = loginMethodForAMR(amr)
 	a.SessionHash = digest(cookie.Value)
 	b, _ := json.Marshal(a)
-	tag, e := s.db.Exec(r.Context(), "UPDATE auth_requests SET body=$1 WHERE id=$2 AND expires_at>now() AND body->>'Completed'='false'", b, a.ID)
-	if e != nil || tag.RowsAffected() != 1 {
+	tx, e := s.db.Begin(r.Context())
+	if e != nil {
+		fail(w, 503, "授权服务暂不可用")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	policy, e := tokenPolicy(r.Context(), tx, u.ID, a.GetClientID(), nil)
+	if e != nil {
+		var denied *oidc.Error
+		if errors.As(e, &denied) {
+			fail(w, 403, "你尚无权访问该项目")
+		} else {
+			fail(w, 503, "授权服务暂不可用")
+		}
+		return
+	}
+	if !amrAllowedByMethods(amr, policy.LoginMethods) {
+		fail(w, 403, "当前登录方式未在该项目启用，请使用其他方式重新登录")
+		return
+	}
+	tag, e := tx.Exec(r.Context(), "UPDATE auth_requests SET body=$1 WHERE id=$2 AND expires_at>now() AND body->>'Completed'='false'", b, a.ID)
+	if e != nil {
+		fail(w, 503, "授权服务暂不可用")
+		return
+	}
+	if tag.RowsAffected() != 1 {
 		fail(w, 400, "请求已使用或过期")
+		return
+	}
+	if e = tx.Commit(r.Context()); e != nil {
+		fail(w, 503, "授权服务暂不可用")
 		return
 	}
 	s.audit(r.Context(), u.ID, "oidc.authorized", a.GetClientID(), true)

@@ -161,11 +161,11 @@
   </div>
 </template>
 <script setup lang="ts">
-  import { ref, onMounted, watch } from 'vue'
-  import { ElMessage, ElMessageBox } from 'element-plus'
+  import { computed, ref, onMounted, watch } from 'vue'
   import { useUserStore } from '@/store/modules/user'
   import { api, dateText } from '@/api/duoyu'
-  const superAdmin = useUserStore().info.roles?.includes('R_SUPER')
+  const user = useUserStore()
+  const superAdmin = computed(() => user.info.roles?.includes('R_SUPER'))
   const diagnostic = ref<Record<string, any>>({}),
     rows = ref<any[]>([]),
     page = ref(1),
@@ -188,34 +188,14 @@
   const attemptPages = ref<Record<string, number>>({})
   const attemptRows = ref<Record<string, any[]>>({}),
     attemptErrors = ref<Record<string, string>>({})
-  async function loadAttempts(row: any, expanded: any[]) {
-    if (!expanded.includes(row)) return
+  async function loadAttempts(row: any, expanded: any[] | boolean) {
+    if (Array.isArray(expanded) ? !expanded.includes(row) : !expanded) return
     attemptErrors.value[row.id] = ''
     attemptPages.value[row.id] = 1
     try {
       attemptRows.value[row.id] = await api('/api/admin/logout-events/' + row.id + '/attempts')
     } catch (e: any) {
       attemptErrors.value[row.id] = e.message
-    }
-  }
-  const retrying = ref(false)
-  async function retry(row: any) {
-    try {
-      await ElMessageBox.confirm('重新投递同一退出事件，接收项目需按事件标识去重。', '重新投递', {
-        type: 'warning'
-      })
-    } catch {
-      return
-    }
-    retrying.value = true
-    try {
-      await api('/api/admin/logout-events/' + row.id + '/retry', 'POST', {})
-      ElMessage.success('已加入重试队列')
-      await load()
-    } catch (e: any) {
-      ElMessage.error(e.message)
-    } finally {
-      retrying.value = false
     }
   }
   let generation = 0

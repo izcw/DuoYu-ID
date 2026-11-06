@@ -44,17 +44,17 @@ export class RouteRegistry {
     }
 
     // 转换并注册路由
-    const removeRouteFns: (() => void)[] = []
-
-    menuList.forEach((route) => {
-      if (route.name && !this.router.hasRoute(route.name)) {
-        const routeConfig = this.transformer.transform(route)
-        const removeRouteFn = this.router.addRoute(routeConfig as RouteRecordRaw)
-        removeRouteFns.push(removeRouteFn)
+    try {
+      for (const route of menuList) {
+        if (route.name && !this.router.hasRoute(route.name)) {
+          const routeConfig = this.transformer.transform(route)
+          this.removeRouteFns.push(this.router.addRoute(routeConfig as RouteRecordRaw))
+        }
       }
-    })
-
-    this.removeRouteFns = removeRouteFns
+    } catch (error) {
+      this.unregister()
+      throw error
+    }
     this.registered = true
   }
 

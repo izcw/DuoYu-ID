@@ -54,6 +54,11 @@ export class StorageKeyManager {
    * 查找其他版本的同名存储键
    */
   private findExistingKey(storeId: string): string | null {
+    const previousVersion = localStorage.getItem(StorageConfig.VERSION_KEY)
+    if (previousVersion) {
+      const previous = StorageConfig.generateStorageKey(storeId, previousVersion)
+      if (localStorage.getItem(previous) !== null) return previous
+    }
     const storageKeys = Object.keys(localStorage)
     const pattern = StorageConfig.createKeyPattern(storeId)
 

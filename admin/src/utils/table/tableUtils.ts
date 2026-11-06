@@ -144,7 +144,7 @@ export const defaultResponseAdapter = <T>(response: unknown): ApiResponse<T> => 
   pagination = extractPagination(res)
 
   // 如果没有找到，检查嵌套data
-  if (records.length === 0 && 'data' in res && typeof res.data === 'object') {
+  if (records.length === 0 && res.data !== null && typeof res.data === 'object') {
     const data = res.data as Record<string, unknown>
     records = extractRecords(data, ['list', 'records', 'items'])
     total = extractTotal(data, records, tableConfig.totalFields)
@@ -203,61 +203,49 @@ export const createSmartDebounce = <T extends (...args: any[]) => Promise<any>>(
   fn: T,
   delay: number
 ): T & { cancel: () => void; flush: () => Promise<any> } => {
-  let timeoutId: NodeJS.Timeout | null = null
-  let lastArgs: Parameters<T> | null = null
-  let lastResolve: ((value: any) => void) | null = null
-  let lastReject: ((reason: any) => void) | null = null
-
-  const debouncedFn = (...args: Parameters<T>): Promise<any> => {
-    return new Promise((resolve, reject) => {
-      if (timeoutId) clearTimeout(timeoutId)
-      lastArgs = args
-      lastResolve = resolve
-      lastReject = reject
-      timeoutId = setTimeout(async () => {
-        try {
-          const result = await fn(...args)
-          resolve(result)
-        } catch (error) {
-          reject(error)
-        } finally {
-          timeoutId = null
-          lastArgs = null
-          lastResolve = null
-          lastReject = null
-        }
-      }, delay)
-    })
-  }
-
-  debouncedFn.cancel = () => {
-    if (timeoutId) clearTimeout(timeoutId)
-    timeoutId = null
-    lastArgs = null
-    lastResolve = null
-    lastReject = null
-  }
-
-  debouncedFn.flush = async () => {
-    if (timeoutId && lastArgs && lastResolve && lastReject) {
-      clearTimeout(timeoutId)
-      timeoutId = null
-      const args = lastArgs
-      const resolve = lastResolve
-      const reject = lastReject
-      lastArgs = null
-      lastResolve = null
-      lastReject = null
-      try {
-        const result = await fn(...args)
-        resolve(result)
-        return result
-      } catch (error) {
-        reject(error)
-        throw error
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let pending:
+    | {
+        args: Parameters<T>
+        resolve: (value?: any) => void
+        reject: (err: unknown) => void
+        promise: Promise<any>
       }
+    | undefined
+
+  const flush = () => {
+    clearTimeout(timer)
+    const batch = pending
+    pending = undefined
+    if (!batch) return Promise.resolve()
+    Promise.resolve()
+      .then(() => fn(...batch.args))
+      .then(batch.resolve, batch.reject)
+    return batch.promise
+  }
+
+  const debouncedFn = (...args: Parameters<T>) => {
+    clearTimeout(timer)
+    if (pending) {
+      pending.args = args
+    } else {
+      let resolve!: (value?: any) => void
+      let reject!: (err: unknown) => void
+      const promise = new Promise((ok, fail) => {
+        resolve = ok
+        reject = fail
+      })
+      pending = { args, promise, resolve, reject }
     }
-    return Promise.resolve()
+    timer = setTimeout(flush, delay)
+    return pending.promise
+  }
+
+  debouncedFn.flush = flush
+  debouncedFn.cancel = () => {
+    clearTimeout(timer)
+    pending?.resolve()
+    pending = undefined
   }
 
   return debouncedFn as any

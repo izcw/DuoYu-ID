@@ -86,29 +86,20 @@ class VersionManager {
     return storedVersion === StorageConfig.CURRENT_VERSION
   }
 
-  /**
-   * 查找旧的存储结构
-   */
-  private findLegacyStorage(): { oldSysKey: string | null; oldVersionKeys: string[] } {
-    const storageKeys = Object.keys(localStorage)
-    const currentVersionPrefix = StorageConfig.generateStorageKey('').slice(0, -1) // 移除末尾的 '-'
-
-    // 查找旧的单一存储结构
-    const oldSysKey =
-      storageKeys.find(
-        (key) =>
-          StorageConfig.isVersionedKey(key) && key !== currentVersionPrefix && !key.includes('-')
-      ) || null
-
-    // 查找旧版本的分离存储键
-    const oldVersionKeys = storageKeys.filter(
-      (key) =>
-        StorageConfig.isVersionedKey(key) &&
-        !StorageConfig.isCurrentVersionKey(key) &&
-        key.includes('-')
-    )
-
-    return { oldSysKey, oldVersionKeys }
+  private migrateStoredVersion(version: string): void {
+    const oldPrefix = StorageConfig.generateStorageKey('', version)
+    const oldRoot = StorageConfig.generateLegacyKey(version)
+    for (const key of Object.keys(localStorage)) {
+      const target =
+        key === oldRoot
+          ? StorageConfig.generateLegacyKey()
+          : key.startsWith(oldPrefix)
+            ? StorageConfig.generateStorageKey(key.slice(oldPrefix.length))
+            : null
+      if (!target || localStorage.getItem(target) !== null) continue
+      const value = localStorage.getItem(key)
+      if (value !== null) localStorage.setItem(target, value)
+    }
   }
 
   /**
@@ -121,7 +112,9 @@ class VersionManager {
     return upgradeLogList.value.some((item) => {
       const itemVersion = this.normalizeVersion(item.version)
       return (
-        item.requireReLogin && itemVersion > normalizedStored && itemVersion <= normalizedCurrent
+        item.requireReLogin &&
+        itemVersion.localeCompare(normalizedStored, 'en', { numeric: true }) > 0 &&
+        itemVersion.localeCompare(normalizedCurrent, 'en', { numeric: true }) <= 0
       )
     })
   }
@@ -162,23 +155,6 @@ class VersionManager {
   }
 
   /**
-   * 清理旧版本数据
-   */
-  private cleanupLegacyData(oldSysKey: string | null, oldVersionKeys: string[]): void {
-    // 清理旧的单一存储结构
-    if (oldSysKey) {
-      localStorage.removeItem(oldSysKey)
-      console.info(`[Upgrade] 已清理旧存储: ${oldSysKey}`)
-    }
-
-    // 清理旧版本的分离存储
-    oldVersionKeys.forEach((key) => {
-      localStorage.removeItem(key)
-      console.info(`[Upgrade] 已清理旧存储: ${key}`)
-    })
-  }
-
-  /**
    * 执行升级后的登出操作
    */
   private performLogout(): void {
@@ -193,29 +169,15 @@ class VersionManager {
   /**
    * 执行升级流程
    */
-  private async executeUpgrade(
-    storedVersion: string,
-    legacyStorage: ReturnType<typeof this.findLegacyStorage>
-  ): Promise<void> {
+  private async executeUpgrade(storedVersion: string): Promise<void> {
     try {
-      if (!upgradeLogList.value.length) {
-        console.warn('[Upgrade] 升级日志列表为空')
-        return
-      }
-
-      const requireReLogin = this.shouldRequireReLogin(storedVersion)
-      const message = this.buildUpgradeMessage(requireReLogin)
-
-      // 显示升级通知
-      this.showUpgradeNotification(message)
-
-      // 更新版本号
+      if (this.getStoredVersion() !== storedVersion) return
+      this.migrateStoredVersion(storedVersion)
       this.setStoredVersion(StorageConfig.CURRENT_VERSION)
+      if (!upgradeLogList.value.length) return
+      const requireReLogin = this.shouldRequireReLogin(storedVersion)
+      this.showUpgradeNotification(this.buildUpgradeMessage(requireReLogin))
 
-      // 清理旧数据
-      this.cleanupLegacyData(legacyStorage.oldSysKey, legacyStorage.oldVersionKeys)
-
-      // 执行登出（如果需要）
       if (requireReLogin) {
         this.performLogout()
       }
@@ -251,17 +213,9 @@ class VersionManager {
       return
     }
 
-    // 检查是否有需要升级的旧数据
-    const legacyStorage = this.findLegacyStorage()
-    if (!legacyStorage.oldSysKey && legacyStorage.oldVersionKeys.length === 0) {
-      this.setStoredVersion(StorageConfig.CURRENT_VERSION)
-      console.info('[Upgrade] 无旧数据，已更新版本号')
-      return
-    }
-
     // 延迟执行升级流程，确保应用已完全加载
     setTimeout(() => {
-      this.executeUpgrade(storedVersion!, legacyStorage)
+      this.executeUpgrade(storedVersion!)
     }, StorageConfig.UPGRADE_DELAY)
   }
 }

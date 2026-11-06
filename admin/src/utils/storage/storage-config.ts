@@ -26,6 +26,10 @@
  * @module utils/storage/storage-config
  * @author Art Design Pro Team
  */
+function escapeKey(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 export class StorageConfig {
   /** 当前应用版本 */
   static readonly CURRENT_VERSION = __APP_VERSION__
@@ -76,35 +80,35 @@ export class StorageConfig {
    * @param storeId 存储ID
    */
   static createKeyPattern(storeId: string): RegExp {
-    return new RegExp(`^${this.STORAGE_PREFIX}[^-]+-${storeId}$`)
+    return new RegExp(`^${this.STORAGE_PREFIX}v?\\d[^-]*-${escapeKey(storeId)}$`)
   }
 
   /**
    * 创建当前版本存储键匹配的正则表达式
    */
   static createCurrentVersionPattern(): RegExp {
-    return new RegExp(`^${this.STORAGE_PREFIX}${this.CURRENT_VERSION}-`)
+    return new RegExp(`^${this.STORAGE_PREFIX}${escapeKey(this.CURRENT_VERSION)}-`)
   }
 
   /**
    * 创建任意版本存储键匹配的正则表达式
    */
   static createVersionPattern(): RegExp {
-    return new RegExp(`^${this.STORAGE_PREFIX}`)
+    return new RegExp(`^${this.STORAGE_PREFIX}v?\\d`)
   }
 
   /**
    * 检查是否为当前版本的键
    */
   static isCurrentVersionKey(key: string): boolean {
-    return key.startsWith(`${this.STORAGE_PREFIX}${this.CURRENT_VERSION}`)
+    return key === this.generateLegacyKey() || key.startsWith(this.generateStorageKey(''))
   }
 
   /**
    * 检查是否为版本化的键
    */
   static isVersionedKey(key: string): boolean {
-    return key.startsWith(this.STORAGE_PREFIX)
+    return this.createVersionPattern().test(key)
   }
 
   /**

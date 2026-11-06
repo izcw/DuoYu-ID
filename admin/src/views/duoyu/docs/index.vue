@@ -2,7 +2,11 @@
   <div class="dy-page art-page-view"
     ><div class="dy-heading"
       ><div><h1>接入文档</h1><p>客户端配置、标准协议与会话管理</p></div
-      ><div class="dy-heading-actions"><el-button type="primary" @click="copyGuide">复制 AI 接入说明</el-button><el-button @click="$router.push('/manage/project-api')">项目管理 API</el-button><el-button @click="download">下载 OpenAPI 文档</el-button></div></div
+      ><div class="dy-heading-actions"
+        ><el-button type="primary" @click="copyGuide">复制 AI 接入说明</el-button
+        ><el-button @click="$router.push('/manage/project-api')">项目管理 API</el-button
+        ><el-button @click="download">下载 OpenAPI 文档</el-button></div
+      ></div
     ><div class="dy-hero"
       ><span class="dy-kicker">接入指南</span><h2>使用多鱼账号登录</h2
       ><p
@@ -61,7 +65,8 @@ Code challenge method: S256</pre
         查询，但不会凭空注销项目本地会话。若需要在 5
         分钟内生效，项目应在该周期内使用有效令牌复核身份或重新发起认证。</p
       ><p class="dy-muted"
-        >退出项目、退出中心是不同操作。可接入后台退出通知；prompt=none 在已有授权且会话满足项目策略时支持。</p
+        >退出项目、退出中心是不同操作。可接入后台退出通知；prompt=none
+        在已有授权且会话满足项目策略时支持。</p
       ></section
     ><section class="dy-panel"
       ><h2>05 · 服务端 API</h2
@@ -84,14 +89,15 @@ Authorization: Bearer YOUR_API_KEY</pre
 <script setup lang="ts">
   import { ref, onMounted } from 'vue'
   import { api } from '@/api/duoyu'
- import {copyDuoyuText} from '@/utils/duoyu-clipboard'
- import {ElMessage} from 'element-plus'
+  import { copyDuoyuText } from '@/utils/duoyu-clipboard'
+  import { ElMessage } from 'element-plus'
   const diagnostics = ref<any>(null),
     diagnosticError = ref('')
   async function check() {
     try {
       diagnosticError.value = ''
-      diagnostics.value = await api('/api/admin/diagnostics');origin.value=diagnostics.value.issuer
+      diagnostics.value = await api('/api/admin/diagnostics')
+      origin.value = diagnostics.value.issuer
     } catch (e: any) {
       diagnosticError.value = e.message
     }
@@ -99,7 +105,15 @@ Authorization: Bearer YOUR_API_KEY</pre
   onMounted(check)
 
   const origin = ref(window.location.origin)
- async function copyGuide(){try{const doc=await api('/api/admin/ai-integration');await copyDuoyuText(doc.guide);ElMessage.success('AI 接入说明已复制')}catch(e:any){ElMessage.error(e.message)}}
+  async function copyGuide() {
+    try {
+      const doc = await api('/api/admin/ai-integration')
+      await copyDuoyuText(doc.guide)
+      ElMessage.success('AI 接入说明已复制')
+    } catch (e: any) {
+      ElMessage.error(e.message)
+    }
+  }
   const claimPage = ref(1)
   const claims = [
     { name: 'roles', scope: 'profile', description: '当前项目角色字段数组' },

@@ -235,7 +235,7 @@
 
   const emit = defineEmits<FormEmits>()
 
-  const modelValue = defineModel<Record<string, any>>({ default: {} })
+  const modelValue = defineModel<Record<string, any>>({ default: () => ({}) })
   const initialModelValue = ref<Record<string, any>>({})
 
   // 保存组件初始化时的表单快照，用于 reset 时恢复默认值。
@@ -279,15 +279,16 @@
 
   // 兼容 a.b、a.0.b 这类路径写法，数字段会被当作数组索引处理。
   const parsePath = (path: string) => {
-    return path
-      .split('.')
-      .filter(Boolean)
-      .map((segment) => (PATH_NUMBER_RE.test(segment) ? Number(segment) : segment))
+    const fields = path.split('.').filter(Boolean)
+    if (fields.some((field) => ['__proto__', 'prototype', 'constructor'].includes(field))) return []
+    return fields.map((segment) => (PATH_NUMBER_RE.test(segment) ? Number(segment) : segment))
   }
 
   const getFieldValue = (path: string) => {
-    return parsePath(path).reduce<any>((currentValue, segment) => {
-      if (currentValue == null) return undefined
+    const segments = parsePath(path)
+    if (!segments.length) return undefined
+    return segments.reduce<any>((currentValue, segment) => {
+      if (currentValue == null || !Object.hasOwn(currentValue, segment)) return undefined
       return currentValue[segment]
     }, modelValue.value)
   }
@@ -299,7 +300,7 @@
 
     const lastSegment = segments.pop()
     const parent = segments.reduce<any>((currentValue, segment) => {
-      if (currentValue == null) return undefined
+      if (currentValue == null || !Object.hasOwn(currentValue, segment)) return undefined
       return currentValue[segment]
     }, modelValue.value)
 
@@ -334,6 +335,7 @@
       const nextContainer = typeof nextSegment === 'number' ? [] : {}
 
       if (
+        !Object.hasOwn(currentValue, segment) ||
         currentValue[segment] === null ||
         currentValue[segment] === undefined ||
         typeof currentValue[segment] !== 'object'

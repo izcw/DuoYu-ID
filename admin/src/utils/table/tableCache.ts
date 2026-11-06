@@ -126,8 +126,6 @@ export class TableCache<T> {
 
   // 🔧 优化：LRU 缓存清理
   private evictLRU(): void {
-    if (this.cache.size <= this.maxSize) return
-
     // 找到最少使用的缓存项
     let lruKey = ''
     let minAccessCount = Infinity
@@ -157,7 +155,8 @@ export class TableCache<T> {
     const now = Date.now()
 
     // 检查是否需要清理
-    this.evictLRU()
+    if (this.maxSize <= 0) return
+    if (!this.cache.has(key) && this.cache.size >= this.maxSize) this.evictLRU()
 
     this.cache.set(key, {
       data,

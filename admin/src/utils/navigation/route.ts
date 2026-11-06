@@ -24,6 +24,16 @@
 
 import { AppRouteRecord } from '@/types'
 
+export function webNavigationUrl(value?: string): string | undefined {
+  if (!value?.trim()) return
+  try {
+    const url = new URL(value, location.href)
+    if (url.protocol === 'https:' || url.protocol === 'http:') return url.href
+  } catch {
+    // Invalid saved menu entries have no navigation target.
+  }
+}
+
 // 检查是否为 iframe 路由
 export function isIframe(url: string): boolean {
   return url.startsWith('/outside/iframe/')

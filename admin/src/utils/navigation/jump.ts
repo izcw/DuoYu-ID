@@ -16,11 +16,12 @@
  */
 import { AppRouteRecord } from '@/types/router'
 import { router } from '@/router'
-import { isNavigableMenuItem } from './route'
+import { isNavigableMenuItem, webNavigationUrl } from './route'
 
 // 打开外部链接
 export const openExternalLink = (link: string) => {
-  window.open(link, '_blank')
+  const url = webNavigationUrl(link)
+  if (url) window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 /**
@@ -59,7 +60,7 @@ export const handleMenuJump = (item: AppRouteRecord, jumpToFirst: boolean = fals
   }
 
   // 如果第一个子菜单是外部链接则打开新窗口
-  if (firstChild.meta?.link) {
+  if (firstChild.meta?.link && !firstChild.meta.isIframe) {
     return openExternalLink(firstChild.meta.link)
   }
 

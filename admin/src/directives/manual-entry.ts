@@ -10,8 +10,12 @@ export const vManualEntry: ObjectDirective<HTMLElement> = {
     if (!input) return
     input.classList.add('dy-manual-entry')
     input.readOnly = true
-    const focus = () => { input.readOnly = false }
-    const blur = () => { input.readOnly = true }
+    const focus = () => {
+      input.readOnly = false
+    }
+    const blur = () => {
+      input.readOnly = true
+    }
     const autofill = (event: AnimationEvent) => {
       if (event.animationName !== 'dy-reject-autofill') return
       input.value = ''
@@ -26,5 +30,8 @@ export const vManualEntry: ObjectDirective<HTMLElement> = {
       input.removeEventListener('animationstart', autofill)
     })
   },
-  unmounted(element) { cleanup.get(element)?.(); cleanup.delete(element) }
+  unmounted(element) {
+    cleanup.get(element)?.()
+    cleanup.delete(element)
+  }
 }

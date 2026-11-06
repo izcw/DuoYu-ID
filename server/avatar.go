@@ -4,11 +4,7 @@ import (
 	"bytes"
 	"image"
 	_ "image/jpeg"
-	"image/png"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
@@ -27,11 +23,15 @@ func (s *Server) avatar(w http.ResponseWriter, r *http.Request) {
 		defer r.MultipartForm.RemoveAll()
 	}
 	f, h, e := r.FormFile("avatar")
-	if e != nil || h.Size > 2<<20 {
+	if e != nil {
 		fail(w, 400, "请选择不超过 2 MB 的图片")
 		return
 	}
 	defer f.Close()
+	if h.Size > 2<<20 {
+		fail(w, 400, "请选择不超过 2 MB 的图片")
+		return
+	}
 	var b bytes.Buffer
 	if _, e = b.ReadFrom(f); e != nil || b.Len() > 2<<20 {
 		fail(w, 400, "图片过大")
@@ -54,39 +54,25 @@ func (s *Server) avatar(w http.ResponseWriter, r *http.Request) {
 	out := image.NewRGBA(image.Rect(0, 0, 256, 256))
 	draw.CatmullRom.Scale(out, out.Bounds(), im, image.Rect(x, y, x+side, y+side), draw.Src, nil)
 	id := randomID() + ".png"
-	p := filepath.Join(s.data, "avatars", id)
-	file, e := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	dir, e := publicImageDir(s.data, "avatars", true)
 	if e != nil {
 		fail(w, 500, "保存失败")
 		return
 	}
-	e = png.Encode(file, out)
-	file.Close()
-	if e != nil {
-		os.Remove(p)
+	defer dir.Close()
+	if e = writePublicImage(dir, id, out); e != nil {
 		fail(w, 500, "保存失败")
 		return
 	}
 	avatar := "/avatars/" + id
-	if _, e = s.db.Exec(r.Context(), "UPDATE users SET avatar=$1 WHERE id=$2", avatar, u.ID); e != nil {
-		os.Remove(p)
+	tag, e := s.db.Exec(r.Context(), "UPDATE users SET avatar=$1 WHERE id=$2 AND enabled", avatar, u.ID)
+	if e != nil || tag.RowsAffected() != 1 {
+		dir.Remove(id)
 		fail(w, 500, "保存失败")
 		return
 	}
 	ok(w, map[string]string{"avatar": avatar})
 }
 func (s *Server) serveAvatar(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if len(id) != 47 || !strings.HasSuffix(id, ".png") || strings.ContainsAny(id, "/\\.") && !strings.HasSuffix(id, ".png") {
-		http.NotFound(w, r)
-		return
-	}
-	for _, c := range strings.TrimSuffix(id, ".png") {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
-			http.NotFound(w, r)
-			return
-		}
-	}
-	w.Header().Set("Cache-Control", "public,max-age=31536000,immutable")
-	http.ServeFile(w, r, filepath.Join(s.data, "avatars", id))
+	s.servePublicImage(w, r, "avatars")
 }

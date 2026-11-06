@@ -80,21 +80,25 @@
           ><el-option label="登录验证码" value="login" /><el-option
             label="重置密码"
             value="reset" /><el-option label="邮箱变更" value="email" /></el-select></div
-      ><iframe
-        title="验证码邮件预览"
-        :srcdoc="html"
-        sandbox=""
-        style="
-          width: 100%;
-          height: 650px;
-          border: 0;
-          border-radius: 6px;
-          background: #fafafa;
-        " /></section
+      ><div v-if="previewError" class="dy-error" role="alert">
+        {{ previewError }} <el-button text @click="preview">重试预览</el-button>
+      </div>
+      <div v-loading="previewLoading"
+        ><iframe
+          title="验证码邮件预览"
+          :srcdoc="html"
+          sandbox=""
+          style="
+            width: 100%;
+            height: 650px;
+            border: 0;
+            border-radius: 6px;
+            background: #fafafa;
+          " /></div></section
   ></div>
 </template>
 <script setup lang="ts">
-  import { ref, onMounted } from 'vue'
+  import { ref, onMounted, onBeforeUnmount } from 'vue'
   import { ElMessage } from 'element-plus'
   import { api } from '@/api/duoyu'
   const settings = ref<any>({}),
@@ -102,13 +106,41 @@
     error = ref(''),
     purpose = ref('login'),
     html = ref(''),
+    previewError = ref(''),
+    previewLoading = ref(false),
     saving = ref(false)
+  let previewGeneration = 0
+  let previewController: AbortController | undefined
+  onBeforeUnmount(() => {
+    previewGeneration++
+    previewController?.abort()
+  })
   async function preview() {
-    const response = await fetch('/api/admin/mail-preview?purpose=' + purpose.value, {
-      credentials: 'same-origin'
-    })
-    if (!response.ok) throw Error('模板加载失败')
-    html.value = await response.text()
+    const generation = ++previewGeneration
+    previewController?.abort()
+    previewController = new AbortController()
+    html.value = ''
+    previewError.value = ''
+    previewLoading.value = true
+    try {
+      const response = await fetch(
+        '/api/admin/mail-preview?purpose=' + encodeURIComponent(purpose.value),
+        {
+          credentials: 'same-origin',
+          signal: previewController.signal
+        }
+      )
+      if (generation !== previewGeneration) return
+      if (response.status === 401) window.location.assign('/login')
+      if (!response.ok) throw Error('模板加载失败，请重试（HTTP ' + response.status + '）')
+      const content = await response.text()
+      if (generation === previewGeneration) html.value = content
+    } catch (e: unknown) {
+      if (generation === previewGeneration)
+        previewError.value = e instanceof Error ? e.message : '模板加载失败，请重试'
+    } finally {
+      if (generation === previewGeneration) previewLoading.value = false
+    }
   }
   async function save() {
     saving.value = true

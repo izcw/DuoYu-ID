@@ -13,7 +13,14 @@ try {
   $values = @{ SMTP_HOST='smtp.qq.com'; SMTP_PORT='465'; SMTP_USER=$email; SMTP_FROM=$email; SMTP_PASSWORD=$plain; SMTP_PLAIN_LOCAL='false' }
   $lines = @(Get-Content -LiteralPath $EnvFile | Where-Object { $_ -notmatch '^SMTP_(HOST|PORT|USER|FROM|PASSWORD|PLAIN_LOCAL)=' })
   foreach ($key in ($values.Keys | Sort-Object)) { $lines += "$key=$($values[$key])" }
-  [IO.File]::WriteAllLines((Resolve-Path -LiteralPath $EnvFile).Path, $lines, [Text.UTF8Encoding]::new($false))
+  $target = (Resolve-Path -LiteralPath $EnvFile).Path
+  $pendingFile = Join-Path ([IO.Path]::GetDirectoryName($target)) ('.env-mail-' + [guid]::NewGuid().ToString('N') + '.tmp')
+  try {
+    [IO.File]::WriteAllLines($pendingFile, $lines, [Text.UTF8Encoding]::new($false))
+    [IO.File]::Replace($pendingFile, $target, [Management.Automation.Language.NullString]::Value)
+  } finally {
+    if ([IO.File]::Exists($pendingFile)) { [IO.File]::Delete($pendingFile) }
+  }
   Write-Host 'QQ SMTP configuration saved locally. Restart DuoYu ID, then request a login code. No email was sent by this script.'
 } finally {
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)

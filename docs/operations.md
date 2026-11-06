@@ -47,6 +47,10 @@ Windows 开发环境：
 
 恢复脚本只允许创建新的 `duoyu_restore_*` 数据库，已存在目标会失败；不覆盖、不删除当前数据库。先验证文件哈希再以单事务恢复，保留恢复副本供检查。data 文件保留在备份中，不自动覆盖运行中的 data。切换生产数据库和数据目录应在停机窗口人工完成，并使用原 DUOYU_SECRET。
 
+恢复前要求清单完整列出 `database.dump` 和 data 中的所有文件，包括 `data/signing.pem`；漏列、缺失、重复路径、目录链接或哈希不一致都会在创建数据库前拒绝。文件清单用于完整性检查，不是可信来源签名；仍应限制备份写入权限。使用 PowerShell 7 运行运维脚本；`scripts/restore-manifest-test.ps1` 验证异常清单与目录链接，探针不会执行 Docker 命令。
+
+跨项目隔离演练位于扩展仓库 `scripts/restore-drill.mjs`（`pnpm test:restore`）。需要 PowerShell 7、Docker 与 `GO_BINARY`。它启动没有宿主端口的临时 PostgreSQL，使用合成数据执行本项目真实备份/恢复脚本，逐表、序列和文件核对，再以 API 角色启动恢复后的 ID，确认 JWKS 保持一致；同时验证业务全量/增量加密备份的实际数据库恢复。不会运行邮件 worker。结果和耗时写入扩展 `work/restore-drill-*/results.json`，容器结束时清理。小规模合成演练不能代替生产数据量、实际生产备份和恢复时间目标验收。
+
 Docker 生产部署的 app-data 卷需要使用卷备份方式或提供该卷的只读快照路径；当前脚本不能自动备份其他主机的卷。未假设 Docker Hub 网络、生产 HTTPS 或真实设备已验收。
 
 历史恢复演练及数据库副本见 [实现与测试报告](roadmap-implementation-and-tests-2026-10-27.md)。演练副本不启动 worker；备份不纳入 Git。生产恢复目标必须按实际数据规模重新演练。

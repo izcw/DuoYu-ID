@@ -129,6 +129,11 @@ docker compose restart app
 
 默认 app 为 combined。需要拆分时自行增加 api 与 worker 服务，统一数据库、服务密钥、签名数据与 SMTP 配置；只启 api 会导致队列积压。Compose 为应用和数据库配置 unless-stopped 重启策略，但未包含代理服务、外部探活、离机备份或告警发送通道，需要部署侧配置并验证故障恢复。
 
+app 配置 `stop_grace_period: 60s`，给 HTTP 排空、正在发送的邮件及队列状态提交保留时间。
+拆分出的 worker 或其他进程托管也应保留这一停止窗口；不要把停止超时后的强制退出当作发送成功。
+Docker [默认只有 10 秒](https://docs.docker.com/reference/compose-file/services/#stop_grace_period)，
+短于代码中的邮件拨号与连接截止时间。60 秒是托管宽限配置，不代表数据库故障时必然能够正常清理。
+
 监控写入数据库和审计，进程或数据库整体不可用时需外部监控发现。备份、轮换和恢复操作见 [运维与恢复](operations.md)。
 
 ## 不使用 Docker 的应用部署
@@ -176,10 +181,15 @@ Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
 更新前备份数据库、data、环境文件和 Nginx 配置。将二进制与 **同一次构建** 的 admin/dist 上传到暂存目录，校验 SHA-256；停止 Go 项目后替换文件，再在宝塔启动项目。不要覆盖 data、环境文件和数据库，不要向发布包加入 Key.txt、.env.local 或备份文件。
 
 ```sh
-# 服务器 root：先创建仅管理员可访问的备份目录
-install -d -m 700 /www/backup/duoyu-release
-runuser -u postgres -- /www/server/pgsql/bin/pg_dump -Fc duoyu_id > /www/backup/duoyu-release/database.dump
-cp -a /www/wwwroot/duoyu-id/data /www/backup/duoyu-release/data
+# 在维护窗口停止账号中心及 worker 写入后，以 root 执行
+set -eu
+umask 077
+backup_dir=$(mktemp -d /www/backup/duoyu-id-release.XXXXXXXX)
+runuser -u postgres -- /www/server/pgsql/bin/pg_dump -Fc duoyu_id > "$backup_dir/database.dump"
+/www/server/pgsql/bin/pg_restore --list "$backup_dir/database.dump" > "$backup_dir/database.contents"
+cp -a /www/wwwroot/duoyu-id/data "$backup_dir/data"
+(cd "$backup_dir" && sha256sum database.dump > database.sha256 && sha256sum -c database.sha256)
+printf '本次恢复点 %s\n' "$backup_dir"
 # 在宝塔启动/重启 Go 项目后验证
 curl --fail https://id.duoyu.link/healthz
 curl --fail https://id.duoyu.link/.well-known/openid-configuration

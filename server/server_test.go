@@ -30,6 +30,15 @@ func TestPassword(t *testing.T) {
 		t.Fatal("password verification failed")
 	}
 }
+
+func (s *Server) newSession(w http.ResponseWriter, r *http.Request, id, amr string) error {
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(r.Context())
+	return s.commitLoginSession(w, r, tx, id, amr, "")
+}
 func TestRedirectValidation(t *testing.T) {
 	s := &Server{}
 	for _, v := range []string{"https://app.example/callback", "https://app.example/callback?mode=1"} {
@@ -89,13 +98,18 @@ func TestIntegration(t *testing.T) {
 	srv.Start()
 	defer srv.Close()
 	t.Run("Legal consent and documents", func(t *testing.T) { testLegalConsent(t, s, origin) })
+	t.Run("Queued project mail authorization", func(t *testing.T) { testQueuedMailAuthorization(t, s, origin) })
 	t.Run("Project blacklist", func(t *testing.T) { testProjectBlacklist(t, s, origin) })
+	t.Run("Project policy replacement", func(t *testing.T) { testProjectPolicyReplacement(t, s, origin) })
+	t.Run("Account change challenge atomicity", func(t *testing.T) { testAccountChangeChallenges(t, s, origin) })
 	t.Run("Account password policy and numeric IDs", func(t *testing.T) { testAccountPolicy(t, s) })
 	t.Run("QR login ownership and single use", func(t *testing.T) { testQRLogin(t, s, origin) })
+	t.Run("Passkey registration proof ownership", func(t *testing.T) { testPasskeyChallenges(t, s, origin) })
 	t.Run("Project mail isolation and idempotency", func(t *testing.T) { testProjectMail(t, s, origin) })
 	t.Run("Discovery, origins and protocol faults", func(t *testing.T) { testProtocolContract(t, s, origin) })
 	t.Run("Authenticator enrollment and login", func(t *testing.T) { testAuthenticator(t, s, origin) })
 	t.Run("Account projects and avatars", func(t *testing.T) { testAccountProjects(t, s, origin) })
+	t.Run("Admin pagination snapshot", func(t *testing.T) { testPaginationSnapshot(t, s) })
 	t.Run("Developer credential data migration", func(t *testing.T) { testDeveloperMigration(t, s) })
 	t.Run("Unified developer credentials and MCP", func(t *testing.T) { testDeveloperMCP(t, s, origin) })
 	t.Run("Management API", func(t *testing.T) { testManagementAPI(t, s, origin) })

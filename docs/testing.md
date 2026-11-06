@@ -2,6 +2,49 @@
 
 将后端隔离测试、开发环境浏览器联调、生产验收分开执行。测试不得向真实 SMTP 发送邮件，也不得在生产数据库创建测试夹具。
 
+## 当前跨端隔离入口
+
+同级 `DuoYu-Extensions` 提供 `test:auth:isolated`、`test:id:pages` 与 `test:admin:isolated`。
+先构建 ID 管理/登录前端及业务管理前端，再在扩展根目录设置 `DUOYU_TEST_DATABASE_URL`
+为本机专用 `duoyu_sync_test` 数据库，设置 `GO_BINARY` 为本机 Go 可执行文件路径。
+夹具创建随机 schema、临时账号、独立浏览器资料和短期 TLS 证书；启动真实 ID、Go 业务服务与
+Node 同步引擎，ID 使用 api 角色。无需读取 `.env.local`，不启动邮件 worker，结束后删除 schema。
+真实认证/同步、身份中心 20 页及业务管理 13 页的双视口检查分别运行，也可执行
+`node scripts/auth-isolated.mjs --id-pages --admin-pages` 合并检查；命令必须从扩展根目录运行。
+页面检查覆盖加载、权限、响应式和运行时错误；隔离入口另含真实昵称保存/刷新、项目角色增改、默认角色、成员分配及删除后转移的数据库验证。
+还包含项目 Logo 上传与创建/修改、准入去重及清空、黑名单持久化及清空、开发者凭证 HTTP/MCP 作用域即时变更、轮换和撤销，
+注册开关修改后恢复、邮件模板预览 503 清除旧内容并重试恢复。以上写操作均限于测试 schema。
+业务管理检查另含组件 CRUD、模板快照发布、壁纸上传和草稿/公开资源边界。
+扩展目录的 `test:id:role-race` 覆盖角色组件乱序响应、旧请求失败、成员路由切换和卸载。
+`test:id:management-race` 覆盖凭证加载、Logo 上传、配置检查和邮件预览的乱序、旧失败及卸载隔离。
+同一脚本也覆盖项目、角色及开发者凭证的旧保存成功/失败、卸载、过期删除确认及旧轮换响应；
+实际请求继续按原目标完成，过期结果不会改变新页面的表单基线、加载状态、秘密显示或路由。
+这些覆盖仍不替代所有编辑操作、真实设备和实际邮件投递验收。
+
+`test:id:security` 在相邻扩展项目提供无私密配置的安全交互矩阵：CDP虚拟WebAuthn注册、
+二维码解码与不同浏览器会话的确认/一次性登录、TOTP绑定与登录/重放拒绝、恢复码消费与解绑后会话撤销。
+验证码直接植入随机测试schema，身份服务仅运行api角色；不发送邮件，结果明确标记虚拟认证器和测试验证码，
+不能用来证明真实邮件送达、iPhone或实体密钥兼容性。
+下方依赖固定端口、Docker 和本地配置的脚本属于旧联调入口，自动化审查应优先使用上述隔离夹具。
+
+## 依赖与静态检查
+
+管理前端执行 `pnpm lint`、`pnpm test:dependencies` 与 `pnpm build`。
+仓库 CI 已在构建前接入 lint 和依赖兼容检查；本轮仅本地验证，尚未执行远程 GitHub Actions。
+依赖兼容检查覆盖现有中英文翻译、XLSX/XLS 导入导出往返、Commitizen 配置查找、ESLint TypeScript 诊断和 Stylelint Vue 配置。
+用 `pnpm audit --registry=https://registry.npmjs.org` 查询官方审计接口；部分镜像没有审计端点，端点失败不能视为零漏洞。
+
+SheetJS 使用官方 CDN 的 0.20.3 固定包，保留原导入导出组件；vue-i18n 使用修复版 11.4.18。
+锁文件固定传递版本，两个 minimatch 覆盖只限于已验证使用命名导出/构造器的 TypeScript-ESLint 与 ESLint。
+Vue Stylelint 推荐规则限定兼容现有 Stylelint 16 的版本。
+截至本次审查，完整依赖审计仍有 1 项 Commitizen→glob→minimatch 3 开发工具中风险告警；
+尝试更新 glob 导致实际 Commitizen 配置查找失败，已撤回该覆盖，未屏蔽告警。
+这一开发工具不会进入浏览器发布包，仍需跟进上游兼容修复。
+
+Go 使用 `govulncheck -json ./...` 检查实际调用链，须区分模块包含与函数可达；
+本次 ID 的 `golang.org/x/crypto/openpgp` 只有模块级提示，没有导入或调用链，业务后端无发现。
+以上结果是检查时的漏洞数据库快照，不能保证未来没有新增漏洞。
+
 ## 后端测试
 
 在仓库根目录运行：
@@ -75,11 +118,13 @@ node tests/mail-template.mjs
 
 ## CI
 
-[工作流](../.github/workflows/test.yml) 在 push / pull_request 上运行 Go 测试、vet、前端构建与代表性浏览器回归。它使用独立 PostgreSQL 服务与随机临时配置，无 SMTP 密码。
+[工作流](../.github/workflows/test.yml) 在 push / pull_request 上运行 Go 测试、vet、前端构建与代表性浏览器回归。它使用本机一次性 PostgreSQL 服务中的 `duoyu_ci` 库。临时管理员配置仅传给测试子进程，服务监听随机端口，通行密钥使用 localhost 域名；测试不写入项目的 `.env.local`，服务使用 api 角色。
 
 `admin/tests/ci.mjs` 只允许 `CI=true` 且没有 `.env.local` 的隔离工作区，拒绝覆盖本地配置。CI 浏览器部分目前执行 session、ui-refresh、smoke；依赖本机 Docker 容器名称的全部多项目脚本并未原样放入 CI。查看具体提交的 Actions 结果才可确认该提交的 CI 状态。
 
 ## 生产与设备验收
+
+服务生命周期专项 `TestServeHTTP*` 使用真实本机 HTTP 延迟请求验证：停止监听后等待已接收请求完成；10秒宽限期耗尽则关闭连接并返回错误；监听失败直接返回。它不等同于已在部署服务器上测试系统信号和进程管理器。`TestIntegration/Queued_project_mail_authorization` 使用隔离 PostgreSQL 和替代邮件传输，覆盖十类授权/撤权状态，不调用真实 SMTP。
 
 本地不同端口是不同 origin、同一 site，不能替代两个正式站点的跨站测试。正式验收还需检查：
 
@@ -90,6 +135,12 @@ node tests/mail-template.mjs
 5. 停 worker、数据库不可用、邮件不确定结果、退出通知失败，以及备份恢复后队列处理。
 
 已有历史证据见 [实现与测试报告](roadmap-implementation-and-tests-2026-10-27.md)。压力测试、完整读屏审计、独立安全审计和 OIDC conformance 不在上述通过声明中。
+
+同级扩展仓库的 `pnpm test:linux` 可在无宿主端口、独立临时 PostgreSQL 的 Linux 容器中
+运行身份/业务/同步服务全部后端测试和真实进程入口检查。ID 使用 api 角色，不启动 SMTP；
+非法运行角色、端口被占用和 HTTP 排空错误应以非零状态退出，正常 SIGTERM 在清理后返回 0。
+脚本检查前两类启动失败及正常 SIGTERM；排空超时由 Go HTTP 生命周期测试验证。
+该测试不替代正式域名、实体认证器、真实邮件和生产恢复验收。
 
 ## 账号策略回归
 

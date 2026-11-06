@@ -43,6 +43,19 @@ func TestTOTP(t *testing.T) {
 		t.Fatal("tamper accepted")
 	}
 }
+
+func (s *Server) verifyAuthenticator(ctx context.Context, uid, code, session string, recovery bool, operation string) ([]string, bool, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+	codes, valid, err := s.verifyAuthenticatorTx(ctx, tx, uid, code, session, recovery, operation)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	return codes, valid && err == nil, err
+}
 func testAuthenticator(t *testing.T, s *Server, origin string) {
 	ctx := context.Background()
 	uid := randomID()
@@ -178,7 +191,25 @@ func testAuthenticator(t *testing.T, s *Server, origin string) {
 		t.Fatal("disabled account")
 	}
 	s.db.Exec(ctx, "UPDATE users SET enabled=true WHERE id=$1", uid)
+	if _, err := s.db.Exec(ctx, `CREATE FUNCTION fail_totp_session() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'test failure'; END$$;
+		CREATE TRIGGER fail_totp_session BEFORE INSERT ON sessions FOR EACH ROW EXECUTE FUNCTION fail_totp_session()`); err != nil {
+		t.Fatal(err)
+	}
+	retry := map[string]any{"account": email, "code": codes[5], "recovery": true}
+	status, _ = call("POST", "/api/auth/authenticator", retry, false)
+	if _, err := s.db.Exec(ctx, "DROP TRIGGER fail_totp_session ON sessions; DROP FUNCTION fail_totp_session()"); err != nil {
+		t.Fatal(err)
+	}
+	if status != 503 {
+		t.Errorf("session fault: got %d", status)
+	}
+	if status, _ := call("POST", "/api/auth/authenticator", retry, false); status != 200 {
+		t.Errorf("recovery code lost on session rollback: %d", status)
+	}
 	seed()
+	if status, _ := call("DELETE", "/api/me/authenticator", map[string]any{"email_code": "123456", "code": "bad", "recovery": true}, true); status != 400 {
+		t.Fatal("bad recovery code accepted", status)
+	}
 	status, out = call("DELETE", "/api/me/authenticator", map[string]any{"email_code": "123456", "code": codes[3], "recovery": true}, true)
 	if status != 200 {
 		t.Fatal(status, out)

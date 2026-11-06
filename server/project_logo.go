@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"golang.org/x/image/draw"
 	"image"
-	"image/png"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -19,8 +16,12 @@ func (s *Server) validProjectLogo(value string) bool {
 	if !projectLogoPath.MatchString(value) {
 		return false
 	}
-	info, err := os.Stat(filepath.Join(s.data, "project-logos", strings.TrimPrefix(value, "/project-logos/")))
-	return err == nil && info.Mode().IsRegular()
+	file, _, err := s.openPublicImage("project-logos", strings.TrimPrefix(value, "/project-logos/"))
+	if err != nil {
+		return false
+	}
+	file.Close()
+	return true
 }
 func (s *Server) uploadProjectLogo(w http.ResponseWriter, r *http.Request) {
 	if _, yes := s.require(w, r, true); !yes {
@@ -65,35 +66,19 @@ func (s *Server) uploadProjectLogo(w http.ResponseWriter, r *http.Request) {
 	}
 	out := image.NewNRGBA(image.Rect(0, 0, width, height))
 	draw.CatmullRom.Scale(out, out.Bounds(), im, im.Bounds(), draw.Src, nil)
-	dir := filepath.Join(s.data, "project-logos")
-	if os.MkdirAll(dir, 0700) != nil {
-		fail(w, 500, "Logo 保存失败")
-		return
-	}
-	id := randomID() + ".png"
-	path := filepath.Join(dir, id)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	dir, err := publicImageDir(s.data, "project-logos", true)
 	if err != nil {
 		fail(w, 500, "Logo 保存失败")
 		return
 	}
-	err = png.Encode(file, out)
-	closeErr := file.Close()
-	if err != nil || closeErr != nil {
-		os.Remove(path)
+	defer dir.Close()
+	id := randomID() + ".png"
+	if err = writePublicImage(dir, id, out); err != nil {
 		fail(w, 500, "Logo 保存失败")
 		return
 	}
 	ok(w, map[string]string{"logo": "/project-logos/" + id})
 }
 func (s *Server) serveProjectLogo(w http.ResponseWriter, r *http.Request) {
-	path := "/project-logos/" + r.PathValue("id")
-	if !projectLogoPath.MatchString(path) {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "public,max-age=31536000,immutable")
-	http.ServeFile(w, r, filepath.Join(s.data, "project-logos", r.PathValue("id")))
+	s.servePublicImage(w, r, "project-logos")
 }

@@ -40,7 +40,20 @@
                   alt="默认头像" /></el-avatar></template></el-table-column
           ><el-table-column prop="email" label="邮箱" min-width="200" /><el-table-column
             prop="name"
-            label="昵称" /><el-table-column prop="role_name" label="项目角色" min-width="120" /><el-table-column label="角色操作" width="110"><template #default="{ row }"><el-button text @click="router.push({path:'/manage/apps/member-role',query:{id,user:row.id}})">修改角色</el-button></template></el-table-column><el-table-column label="首次登录" min-width="170"
+            label="昵称" /><el-table-column
+            prop="role_name"
+            label="项目角色"
+            min-width="120" /><el-table-column label="角色操作" width="110"
+            ><template #default="{ row }"
+              ><el-button
+                text
+                @click="
+                  router.push({ path: '/manage/apps/member-role', query: { id, user: row.id } })
+                "
+                >修改角色</el-button
+              ></template
+            ></el-table-column
+          ><el-table-column label="首次登录" min-width="170"
             ><template #default="{ row }">{{
               dateText(row.first_login_at)
             }}</template></el-table-column
@@ -58,7 +71,11 @@
           @current-change="load"
       /></section>
       <section v-else-if="kind === 'users'" class="dy-panel"
-        ><div class="dy-account-detail-title"><el-avatar :src="form.avatar || '/avatar-default.svg'" :size="48"><img src="/avatar-default.svg" alt="默认头像" /></el-avatar><h2>{{ form.name }}</h2></div><el-descriptions :column="1" border
+        ><div class="dy-account-detail-title"
+          ><el-avatar :src="form.avatar || '/avatar-default.svg'" :size="48"
+            ><img src="/avatar-default.svg" alt="默认头像" /></el-avatar
+          ><h2>{{ form.name }}</h2></div
+        ><el-descriptions :column="1" border
           ><el-descriptions-item label="账号 ID">{{ form.account_id }}</el-descriptions-item
           ><el-descriptions-item label="密码登录">{{
             form.password_locked_until &&
@@ -76,9 +93,24 @@
           ><el-descriptions-item label="注册时间">{{
             dateText(form.created_at)
           }}</el-descriptions-item></el-descriptions
-        ><el-descriptions :column="1" border style="margin-top:16px"><el-descriptions-item label="昵称">{{ form.name }}</el-descriptions-item><el-descriptions-item label="关联项目"><div v-if="form.projects?.length" class="dy-account-projects"><el-tag v-for="project in form.projects" :key="project.id" type="info">{{ project.name }} · {{ project.role_name }}</el-tag></div><span v-else class="dy-muted">暂未关联项目</span></el-descriptions-item></el-descriptions><p class="dy-muted">昵称由用户本人在账号与安全中修改。</p></section
+        ><el-descriptions :column="1" border style="margin-top: 16px"
+          ><el-descriptions-item label="昵称">{{ form.name }}</el-descriptions-item
+          ><el-descriptions-item label="关联项目"
+            ><div v-if="form.projects?.length" class="dy-account-projects"
+              ><el-tag v-for="project in form.projects" :key="project.id" type="info"
+                >{{ project.name }} · {{ project.role_name }}</el-tag
+              ></div
+            ><span v-else class="dy-muted">暂未关联项目</span></el-descriptions-item
+          ></el-descriptions
+        ><p class="dy-muted">昵称由用户本人在账号与安全中修改。</p></section
       >
-      <el-form v-else label-position="top" @submit.prevent="save" class="dy-form">
+      <el-form
+        v-else
+        label-position="top"
+        :disabled="saving || loading || !!error"
+        @submit.prevent="save"
+        class="dy-form"
+      >
         <section v-if="view === 'grants' || view === 'blacklist'" class="dy-panel"
           ><h2>{{ form.name }} · {{ view === 'blacklist' ? '黑名单' : '准入名单' }}</h2
           ><el-alert
@@ -133,9 +165,13 @@
                       :on-change="uploadLogo"
                       :disabled="logoUploading"
                     >
-                      <el-button :loading="logoUploading">{{
-                        form.logo?.startsWith('/project-logos/') ? '替换 Logo' : '上传 Logo'
-                      }}</el-button> </el-upload
+                      <span class="el-button">{{
+                        logoUploading
+                          ? '正在上传'
+                          : form.logo?.startsWith('/project-logos/')
+                            ? '替换 Logo'
+                            : '上传 Logo'
+                      }}</span> </el-upload
                     ><p class="dy-muted"
                       >必填，支持 PNG、JPEG、WebP，最大 2
                       MB；图片保存在账号中心，保持原比例与透明背景。</p
@@ -223,19 +259,46 @@
             >
             <el-form-item label="允许的登录方式"
               ><el-checkbox-group v-model="form.login_methods" class="dy-choice-options"
-                ><el-checkbox value="code"><span class="dy-choice-icon" aria-hidden="true"><ArtSvgIcon icon="ri:mail-line" /></span><span>邮箱验证码</span></el-checkbox
-                ><el-checkbox value="password"><span class="dy-choice-icon" aria-hidden="true"><ArtSvgIcon icon="ri:lock-password-line" /></span><span>账号密码</span></el-checkbox
-                ><el-checkbox value="passkey"><span class="dy-choice-icon" aria-hidden="true"><img src="/passkey.png" alt="" /></span><span>通行密钥</span></el-checkbox
-                ><el-checkbox value="qr"><span class="dy-choice-icon" aria-hidden="true"><img src="/iphone.png" alt="" /></span><span>iPhone 扫码</span></el-checkbox><el-checkbox value="totp"><span class="dy-choice-icon" aria-hidden="true"><img src="/authenticator.png" alt="" /></span><span>身份验证器</span></el-checkbox></el-checkbox-group
+                ><el-checkbox value="code"
+                  ><span class="dy-choice-icon" aria-hidden="true"
+                    ><ArtSvgIcon icon="ri:mail-line" /></span
+                  ><span>邮箱验证码</span></el-checkbox
+                ><el-checkbox value="password"
+                  ><span class="dy-choice-icon" aria-hidden="true"
+                    ><ArtSvgIcon icon="ri:lock-password-line" /></span
+                  ><span>账号密码</span></el-checkbox
+                ><el-checkbox value="passkey"
+                  ><span class="dy-choice-icon" aria-hidden="true"
+                    ><img src="/passkey.png" alt="" /></span
+                  ><span>通行密钥</span></el-checkbox
+                ><el-checkbox value="qr"
+                  ><span class="dy-choice-icon" aria-hidden="true"
+                    ><img src="/iphone.png" alt="" /></span
+                  ><span>iPhone 扫码</span></el-checkbox
+                ><el-checkbox value="totp"
+                  ><span class="dy-choice-icon" aria-hidden="true"
+                    ><img src="/authenticator.png" alt="" /></span
+                  ><span>身份验证器</span></el-checkbox
+                ></el-checkbox-group
               ></el-form-item
             ><p class="dy-muted"
               >默认全部启用；关闭后项目登录页隐藏对应入口，已有账号也须使用允许的方式重新验证。全部取消将暂停该项目登录。个人账号页不能修改此策略，仍可管理自己的密码和通行密钥。</p
             >
             <el-form-item v-if="form.public" label="应用平台"
               ><el-radio-group v-model="form.platform" class="dy-choice-options"
-                ><el-radio value="spa"><span class="dy-choice-icon" aria-hidden="true"><ArtSvgIcon icon="ri:window-line" /></span><span>浏览器 SPA</span></el-radio
-                ><el-radio value="native"><span class="dy-choice-icon" aria-hidden="true"><ArtSvgIcon icon="ri:device-line" /></span><span>桌面 / 手机原生应用</span></el-radio
-                ><el-radio value="extension"><span class="dy-choice-icon" aria-hidden="true"><ArtSvgIcon icon="ri:puzzle-line" /></span><span>浏览器扩展</span></el-radio></el-radio-group
+                ><el-radio value="spa"
+                  ><span class="dy-choice-icon" aria-hidden="true"
+                    ><ArtSvgIcon icon="ri:window-line" /></span
+                  ><span>浏览器 SPA</span></el-radio
+                ><el-radio value="native"
+                  ><span class="dy-choice-icon" aria-hidden="true"
+                    ><ArtSvgIcon icon="ri:device-line" /></span
+                  ><span>桌面 / 手机原生应用</span></el-radio
+                ><el-radio value="extension"
+                  ><span class="dy-choice-icon" aria-hidden="true"
+                    ><ArtSvgIcon icon="ri:puzzle-line" /></span
+                  ><span>浏览器扩展</span></el-radio
+                ></el-radio-group
               ></el-form-item
             >
             <div v-if="form.platform === 'extension'">
@@ -262,10 +325,20 @@
             <div class="dy-listitem"
               ><div
                 >允许会话续期<p
-                  >显式请求 offline_access；刷新令牌每次轮换，重放会撤销整个令牌家族。中心会话最长
-                  12 小时，刷新不会延长，不等于永久记住登录。</p
+                  >显式请求
+                  offline_access；刷新令牌每次轮换，重放会撤销整个令牌家族。关闭长期登录时，续期有效期随中心会话到期。</p
                 ></div
-              ><el-switch v-model="form.refresh_enabled" /></div
+              ><el-switch v-model="form.refresh_enabled" aria-label="允许会话续期" /></div
+            ><div class="dy-listitem"
+              ><div
+                >长期登录<p
+                  >开启后，新登录的续期凭证不设固定到期时间，关机、睡眠后可续期恢复。需要允许会话续期并请求
+                  offline_access。已有登录需要重新授权；主动退出、安全撤销仍然生效。关闭后仅新登录使用普通有效期。</p
+                ></div
+              ><el-switch
+                v-model="form.persistent_login"
+                :disabled="!form.refresh_enabled"
+                aria-label="长期登录" /></div
             ><el-form-item label="登录回调地址 · 每行一个" required
               ><el-input
                 v-model="form.redirectText"
@@ -332,18 +405,16 @@
         v-if="kind === 'apps' && id && view === 'edit'"
         class="dy-panel"
         style="margin-top: 24px"
-        ><h2>项目管理</h2><el-button @click="copyProjectAI">复制 AI 接入资料</el-button><el-button @click="checkApp">检查接入配置</el-button
+        ><h2>项目管理</h2><el-button @click="copyProjectAI">复制 AI 接入资料</el-button
+        ><el-button @click="checkApp">检查接入配置</el-button
         ><div v-if="checks.length"
           ><p v-for="item in checks" :key="item.label"
             >{{ item.passed ? '✓' : '待检查' }} · {{ item.label }}</p
           ><p class="dy-muted">仅校验配置，不代表回调网络或项目验签通过。</p></div
-        ><el-button @click="router.push({ path: '/manage/apps/roles', query: { id } })">角色配置</el-button
-        ><el-button @click="router.push({ path: '/manage/apps/grants', query: { id } })"
-          >准入名单</el-button
-        ><el-button @click="router.push({ path: '/manage/apps/blacklist', query: { id } })"
-          >黑名单</el-button
-        ><el-button @click="router.push({ path: '/manage/apps/members', query: { id } })"
-          >登录用户</el-button
+        ><el-button @click="openProject('roles')">角色配置</el-button
+        ><el-button @click="openProject('grants')">准入名单</el-button
+        ><el-button @click="openProject('blacklist')">黑名单</el-button
+        ><el-button @click="openProject('members')">登录用户</el-button
         ><el-button v-if="!form.public" :loading="saving" @click="rotate">轮换客户端密钥</el-button
         ><p v-if="!form.public" class="dy-muted"
           >轮换后旧密钥立即失效，需要同步更新项目后端。</p
@@ -373,35 +444,68 @@
   import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import { api, dateText } from '@/api/duoyu'
- import {copyDuoyuText} from '@/utils/duoyu-clipboard'
- async function copyProjectAI(){try{const doc=await api('/api/admin/ai-integration');const a=form.value;await copyDuoyuText(doc.guide+'\n\n## 当前已登记项目（优先更新，不要重复创建）\n'+JSON.stringify({client_id:id.value,name:a.name,public:a.public,platform:a.platform,redirects:a.redirects,allowed_origins:a.allowed_origins,login_methods:a.login_methods},null,2)+'\n请从本地环境读取管理凭证；以上内容不包含任何密钥。');ElMessage.success('项目 AI 接入资料已复制')}catch(e:any){ElMessage.error(e.message)}}
-  const checks = ref<any[]>([])
-  async function checkApp() {
+  import { copyDuoyuText } from '@/utils/duoyu-clipboard'
+  async function copyProjectAI() {
     try {
-      const result = await api('/api/admin/apps/' + id.value + '/checks')
-      checks.value = result.checks
+      const doc = await api('/api/admin/ai-integration')
+      const a = form.value
+      await copyDuoyuText(
+        doc.guide +
+          '\n\n## 当前已登记项目（优先更新，不要重复创建）\n' +
+          JSON.stringify(
+            {
+              client_id: id.value,
+              name: a.name,
+              public: a.public,
+              platform: a.platform,
+              redirects: a.redirects,
+              allowed_origins: a.allowed_origins,
+              login_methods: a.login_methods
+            },
+            null,
+            2
+          ) +
+          '\n请从本地环境读取管理凭证；以上内容不包含任何密钥。'
+      )
+      ElMessage.success('项目 AI 接入资料已复制')
     } catch (e: any) {
       ElMessage.error(e.message)
     }
   }
+  const checks = ref<any[]>([])
+  async function checkApp() {
+    const current = generation,
+      path = route.fullPath
+    try {
+      const result = await api('/api/admin/apps/' + id.value + '/checks')
+      if (current !== generation || path !== route.fullPath) return
+      checks.value = result.checks
+    } catch (e: any) {
+      if (current === generation && path === route.fullPath) ElMessage.error(e.message)
+    }
+  }
   const overlapHours = ref(24)
   async function rotateKey() {
+    if (saving.value || loading.value || error.value) return
+    const current = mutationContext()
     try {
       await ElMessageBox.confirm('确认轮换此凭证？新凭证只显示一次。', '轮换 API 凭证')
     } catch {
       return
     }
+    if (!current() || saving.value) return
     saving.value = true
     try {
       const result = await api('/api/admin/keys/' + id.value + '/rotate', 'POST', {
         overlap_hours: overlapHours.value
       })
+      if (!current()) return
       secret.value = result.secret
       baseline.value = snapshot()
     } catch (e: any) {
-      ElMessage.error(e.message)
+      if (current()) ElMessage.error(e.message)
     } finally {
-      saving.value = false
+      if (current()) saving.value = false
     }
   }
   const memberPage = ref(1),
@@ -419,6 +523,7 @@
     group.querySelectorAll<HTMLButtonElement>('[role="radio"]')[form.value.public ? 1 : 0].focus()
   }
   const logoUploading = ref(false)
+  let logoUploadGeneration = 0
   async function uploadLogo(upload: { raw?: File }) {
     const file = upload.raw
     if (!file) return
@@ -428,15 +533,21 @@
     }
     const body = new FormData()
     body.append('logo', file)
+    const uploadGeneration = ++logoUploadGeneration,
+      current = generation,
+      path = route.fullPath
+    const currentUpload = () =>
+      uploadGeneration === logoUploadGeneration && current === generation && path === route.fullPath
     logoUploading.value = true
     try {
       const out = await api('/api/admin/project-logos', 'POST', body)
+      if (!currentUpload()) return
       form.value.logo = out.logo
       ElMessage.success('Logo 已上传，请保存项目')
     } catch (e: any) {
-      ElMessage.error(e.message)
+      if (currentUpload()) ElMessage.error(e.message)
     } finally {
-      logoUploading.value = false
+      if (currentUpload()) logoUploading.value = false
     }
   }
   const extensionID = ref('')
@@ -451,9 +562,9 @@
     form.value.redirectText = `https://${id}.chromiumapp.org/oidc`
     form.value.originText = `chrome-extension://${id}`
   }
-  const route = useRoute(),
-    router = useRouter(),
-    kind = computed(() => route.path.split('/')[2]),
+  const route = useRoute()
+  const router = useRouter()
+  const kind = computed(() => route.path.split('/')[2]),
     view = computed(() => route.path.split('/')[3]),
     id = computed(() => String(route.query.id || ''))
   const form = ref<any>({}),
@@ -508,9 +619,24 @@
   window.addEventListener('beforeunload', unload)
   onBeforeUnmount(() => window.removeEventListener('beforeunload', unload))
   const back = () => router.push('/manage/' + kind.value)
+  const openProject = (section: string) =>
+    router.push({ path: '/manage/apps/' + section, query: { id: id.value } })
   let generation = 0
+  function mutationContext() {
+    const current = generation,
+      path = route.fullPath
+    return () => current === generation && path === route.fullPath
+  }
+  onBeforeUnmount(() => {
+    generation++
+    logoUploadGeneration++
+  })
   async function load() {
+    saving.value = false
     const current = ++generation
+    logoUploadGeneration++
+    logoUploading.value = false
+    checks.value = []
     loading.value = true
     error.value = ''
     secret.value = ''
@@ -525,6 +651,7 @@
         enabled: true,
         restricted: false,
         refresh_enabled: false,
+        persistent_login: false,
         login_methods: ['password', 'code', 'passkey', 'qr', 'totp'],
         platform: 'web',
         backchannel_logout_uri: '',
@@ -594,7 +721,9 @@
     )
   ]
   async function save() {
-    if (saving.value) return
+    if (saving.value || loading.value || error.value) return
+    const current = mutationContext(),
+      submitted = snapshot()
     if (view.value !== 'grants' && !form.value.name.trim()) {
       ElMessage.error('请输入名称')
       return
@@ -635,6 +764,7 @@
             enabled: f.enabled,
             restricted: f.restricted,
             refresh_enabled: f.refresh_enabled,
+            persistent_login: f.persistent_login,
             login_methods: f.login_methods,
             backchannel_logout_uri: f.backchannel_logout_uri,
             platform: f.public ? (f.platform === 'web' ? 'spa' : f.platform) : 'web',
@@ -665,28 +795,34 @@
               }
         )
       }
-      baseline.value = snapshot()
+      if (!current()) return
+      baseline.value = submitted
       ElMessage.success('已保存')
       if (out?.secret) {
         secret.value = out.secret
         window.scrollTo(0, 0)
-      } else back()
+      } else if (snapshot() === submitted) back()
     } catch (e: any) {
-      ElMessage.error(e.message)
+      if (current()) ElMessage.error(e.message)
     } finally {
-      saving.value = false
+      if (current()) saving.value = false
     }
   }
   async function rotate() {
+    if (saving.value || loading.value || error.value) return
+    const current = mutationContext()
+    let started = false
     try {
       await ElMessageBox.confirm('旧密钥立即失效，确定轮换？', '轮换密钥', { type: 'warning' })
+      if (!current() || saving.value) return
+      started = true
       saving.value = true
       const out = await api('/api/admin/apps/' + id.value + '/rotate', 'POST', {})
-      secret.value = out.secret
+      if (current()) secret.value = out.secret
     } catch (e: any) {
-      if (e instanceof Error) ElMessage.error(e.message)
+      if (current() && e instanceof Error) ElMessage.error(e.message)
     } finally {
-      saving.value = false
+      if (started && current()) saving.value = false
     }
   }
   async function copy() {

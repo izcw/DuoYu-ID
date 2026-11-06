@@ -14,30 +14,38 @@ func (s *Server) loginAMRAllowed(ctx context.Context, appID, amr string) bool {
 	if err != nil {
 		return false
 	}
-	method := ""
+	return amrAllowedByMethods(amr, app.LoginMethods)
+}
+
+func amrAllowedByMethods(amr string, methods []string) bool {
+	method := loginMethodForAMR(amr)
+	if method != "" {
+		return slices.Contains(methods, method)
+	}
+	// Legacy credentials without AMR require the unrestricted policy.
+	for _, m := range allLoginMethods() {
+		if !slices.Contains(methods, m) {
+			return false
+		}
+	}
+	return true
+}
+
+func loginMethodForAMR(amr string) string {
 	fields := strings.Fields(amr)
 	switch {
 	case slices.Contains(fields, "totp"):
-		method = "totp"
+		return "totp"
 	case slices.Contains(fields, "qr"):
-		method = "qr"
+		return "qr"
 	case slices.Contains(fields, "hwk"):
-		method = "passkey"
+		return "passkey"
 	case slices.Contains(fields, "pwd"):
-		method = "password"
+		return "password"
 	case slices.Contains(fields, "otp"):
-		method = "code"
+		return "code"
 	}
-	// Legacy credentials without AMR are usable only under an unrestricted policy.
-	if method == "" {
-		for _, m := range allLoginMethods() {
-			if !slices.Contains(app.LoginMethods, m) {
-				return false
-			}
-		}
-		return true
-	}
-	return slices.Contains(app.LoginMethods, method)
+	return ""
 }
 func (s *Server) checkProjectMethod(w http.ResponseWriter, r *http.Request, id, method string) bool {
 	if id == "" {

@@ -19,7 +19,6 @@ type managementContextKey struct{}
 type managementAuth struct {
 	ID       string
 	Owner    User
-	All      bool
 	Scopes   []string
 	Revision int64
 }
@@ -75,7 +74,7 @@ func (s *Server) managementProxy(scope string, project bool, next http.HandlerFu
 		}
 		var a managementAuth
 		var owner string
-		err := s.db.QueryRow(r.Context(), "SELECT id,owner_id,scopes,all_projects FROM api_keys WHERE (digest=$1 OR (previous_digest=$1 AND previous_until>now())) AND NOT revoked AND (expires_at IS NULL OR expires_at>now())", s.mac(strings.TrimPrefix(header, "Bearer "))).Scan(&a.ID, &owner, &a.Scopes, &a.All)
+		err := s.db.QueryRow(r.Context(), "SELECT id,owner_id,scopes FROM api_keys WHERE (digest=$1 OR (previous_digest=$1 AND previous_until>now())) AND owner_id IS NOT NULL AND NOT revoked AND (expires_at IS NULL OR expires_at>now())", s.mac(strings.TrimPrefix(header, "Bearer "))).Scan(&a.ID, &owner, &a.Scopes)
 		if errors.Is(err, pgx.ErrNoRows) {
 			fail(w, 401, "开发者凭证无效、已到期或撤销")
 			return
@@ -85,8 +84,12 @@ func (s *Server) managementProxy(scope string, project bool, next http.HandlerFu
 			return
 		}
 		a.Owner, err = s.user(r.Context(), owner)
-		if err != nil || !a.Owner.Admin {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, errDisabledUser) || err == nil && !a.Owner.Admin {
 			fail(w, 401, "凭证所属管理员不可用")
+			return
+		}
+		if err != nil {
+			fail(w, 503, "凭证验证暂不可用")
 			return
 		}
 		if scope != "*" && (scope != "" && !slices.Contains(a.Scopes, scope) || scope == "" && !slices.Contains(a.Scopes, "projects:create") && !slices.Contains(a.Scopes, "projects:update")) {
@@ -97,9 +100,17 @@ func (s *Server) managementProxy(scope string, project bool, next http.HandlerFu
 			fail(w, 429, "管理请求过于频繁")
 			return
 		}
-		if project && !s.managementProjectAllowed(r.Context(), &a, r.PathValue("id")) {
-			fail(w, 403, "凭证无权管理该项目")
-			return
+		if project {
+			var allowed bool
+			err := s.db.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM apps WHERE id=$2 AND "+managementProjectAccess+")", a.ID, r.PathValue("id")).Scan(&allowed)
+			if err != nil {
+				fail(w, 503, "项目权限查询暂不可用")
+				return
+			}
+			if !allowed {
+				fail(w, 403, "凭证无权管理该项目")
+				return
+			}
 		}
 		if _, err = s.db.Exec(r.Context(), "UPDATE api_keys SET last_used_at=now() WHERE id=$1", a.ID); err != nil {
 			fail(w, 503, "凭证暂不可用")
@@ -108,17 +119,18 @@ func (s *Server) managementProxy(scope string, project bool, next http.HandlerFu
 		next(w, r.WithContext(context.WithValue(r.Context(), managementContextKey{}, &a)))
 	}
 }
-func (s *Server) managementProjectAllowed(ctx context.Context, a *managementAuth, id string) bool {
-	var yes bool
-	err := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM apps WHERE id=$1 AND ($2 OR EXISTS(SELECT 1 FROM management_api_grants WHERE key_id=$3 AND app_id=$1)))", id, a.All, a.ID).Scan(&yes)
-	return err == nil && yes
-}
+// All project-management paths honor both legacy direct bindings and explicit grants.
+const managementProjectAccess = `EXISTS (SELECT 1 FROM api_keys k WHERE k.id=$1
+	AND NOT k.revoked AND (k.expires_at IS NULL OR k.expires_at>now())
+	AND (k.all_projects OR k.app_id=apps.id OR EXISTS (
+		SELECT 1 FROM management_api_grants g WHERE g.key_id=k.id AND g.app_id=apps.id)))`
+
 func (s *Server) managementProjects(w http.ResponseWriter, r *http.Request) {
 	a := r.Context().Value(managementContextKey{}).(*managementAuth)
-	s.queryList(w, r, `SELECT id,name,description,logo,public,platform,enabled,created_at,management_revision AS revision FROM apps WHERE ($1 OR EXISTS(SELECT 1 FROM management_api_grants WHERE key_id=$2 AND app_id=apps.id)) ORDER BY created_at DESC LIMIT 200`, a.All, a.ID)
+	s.queryList(w, r, `SELECT id,name,description,logo,public,platform,enabled,created_at,management_revision AS revision FROM apps WHERE `+managementProjectAccess+` ORDER BY created_at DESC LIMIT 200`, a.ID)
 }
 func (s *Server) loadManagementProject(ctx context.Context, id string) (a App, err error) {
-	err = s.db.QueryRow(ctx, `SELECT id,name,description,logo,public,platform,enabled,restricted,refresh_enabled,redirects,logout_redirects,allowed_origins,login_methods,backchannel_logout_uri,created_at,management_revision FROM apps WHERE id=$1`, id).Scan(&a.ID, &a.Name, &a.Description, &a.Logo, &a.Public, &a.Platform, &a.Enabled, &a.Restricted, &a.RefreshEnabled, &a.Redirects, &a.LogoutRedirects, &a.AllowedOrigins, &a.LoginMethods, &a.BackchannelLogoutURI, &a.Created, &a.Revision)
+	err = s.db.QueryRow(ctx, `SELECT id,name,description,logo,public,platform,enabled,restricted,refresh_enabled,redirects,logout_redirects,allowed_origins,login_methods,backchannel_logout_uri,created_at,management_revision,persistent_login FROM apps WHERE id=$1`, id).Scan(&a.ID, &a.Name, &a.Description, &a.Logo, &a.Public, &a.Platform, &a.Enabled, &a.Restricted, &a.RefreshEnabled, &a.Redirects, &a.LogoutRedirects, &a.AllowedOrigins, &a.LoginMethods, &a.BackchannelLogoutURI, &a.Created, &a.Revision, &a.PersistentLogin)
 	return
 }
 func (s *Server) managementProject(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +155,7 @@ func (s *Server) managementSaveProject(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "请求只能包含一个 JSON 对象")
 		return
 	}
-	fields := []string{"name", "description", "logo", "public", "platform", "enabled", "restricted", "refresh_enabled", "redirects", "logout_redirects", "allowed_origins", "login_methods", "backchannel_logout_uri"}
+	fields := []string{"name", "description", "logo", "public", "platform", "enabled", "restricted", "refresh_enabled", "persistent_login", "redirects", "logout_redirects", "allowed_origins", "login_methods", "backchannel_logout_uri"}
 	for k, v := range patch {
 		if !slices.Contains(fields, k) || bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
 			fail(w, 400, "不支持的字段或 null 值："+k)

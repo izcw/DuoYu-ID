@@ -2,6 +2,15 @@
 .env
 !admin/.env
 .env.local
+/.env.*
+!/.env.example
+!/.env.production.example
+**/*.local
+**/Key.txt
+/Key.txt
+/backups/
+/work/
+/.ci-data/
 data
 admin/node_modules
 admin/dist

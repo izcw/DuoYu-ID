@@ -3,7 +3,9 @@
     <div class="art-card-header">
       <div class="title">
         <h4>代办事项</h4>
-        <p>待处理<span class="text-danger">3</span></p>
+        <p
+          >待处理<span class="text-danger">{{ pendingCount }}</span></p
+        >
       </div>
     </div>
 
@@ -18,7 +20,7 @@
             <p class="text-sm">{{ item.username }}</p>
             <p class="text-g-500 mt-1">{{ item.date }}</p>
           </div>
-          <ElCheckbox v-model="item.complate" />
+          <ElCheckbox v-model="item.complate" :aria-label="item.username" />
         </div>
       </ElScrollbar>
     </div>
@@ -68,4 +70,5 @@
       complate: false
     }
   ])
+  const pendingCount = computed(() => list.filter((item) => !item.complate).length)
 </script>

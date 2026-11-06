@@ -82,8 +82,8 @@ func (s *Server) deliverLogout(ctx context.Context) (bool, error) {
 	defer tx.Rollback(ctx)
 	var id int64
 	var client, uid, hash, endpoint string
-	var attempts int
-	e = tx.QueryRow(ctx, `SELECT id,app_id,user_id,session_hash,endpoint,attempts FROM logout_jobs WHERE status='queued' AND next_attempt<=now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &client, &uid, &hash, &endpoint, &attempts)
+	var attempts, retryCycle int
+	e = tx.QueryRow(ctx, `SELECT id,app_id,user_id,session_hash,endpoint,attempts,retry_count FROM logout_jobs WHERE status='queued' AND next_attempt<=now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id, &client, &uid, &hash, &endpoint, &attempts, &retryCycle)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -115,7 +115,12 @@ func (s *Server) deliverLogout(ctx context.Context) (bool, error) {
 	if e != nil {
 		return true, e
 	}
-	_, e = resultTx.Exec(ctx, "UPDATE logout_jobs SET status=$2,next_attempt=now()+$3::interval,last_error=$4,http_status=$5,completed_at=CASE WHEN $2='delivered' THEN now() ELSE NULL END WHERE id=$1", id, state, fmt.Sprintf("%d seconds", delay), errorClass, statusCode)
+	// All attempts send the same event. Any success finishes it; a failure
+	// only reschedules the lease it owns, including its manual retry cycle.
+	_, e = resultTx.Exec(ctx, `UPDATE logout_jobs SET status=$2,next_attempt=now()+$3::interval,last_error=$4,http_status=$5,
+		completed_at=CASE WHEN $2='delivered' THEN now() ELSE NULL END
+		WHERE id=$1 AND status<>'delivered' AND ($2='delivered' OR (status='queued' AND attempts=$6 AND retry_count=$7))`,
+		id, state, fmt.Sprintf("%d seconds", delay), errorClass, statusCode, attempts, retryCycle)
 	if e != nil {
 		return true, e
 	}

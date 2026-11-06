@@ -15,6 +15,21 @@
     "requestConfigError": "请求配置错误"
   },
   "topBar": {
+    "actions": {
+      "menu": "切换菜单",
+      "refresh": "刷新页面",
+      "quick": "快捷入口",
+      "fullscreen": "进入全屏",
+      "exitFullscreen": "退出全屏",
+      "language": "切换语言",
+      "notice": "通知",
+      "chat": "聊天",
+      "settings": "设置",
+      "theme": "切换主题",
+      "more": "更多操作",
+      "closeSettings": "关闭设置",
+      "home": "首页"
+    },
     "search": {
       "title": "搜索"
     },
@@ -48,20 +63,11 @@
   "setting": {
     "menuType": {
       "title": "菜单布局",
-      "list": [
-        "垂直",
-        "水平",
-        "混合",
-        "双列"
-      ]
+      "list": ["垂直", "水平", "混合", "双列"]
     },
     "theme": {
       "title": "主题风格",
-      "list": [
-        "浅色",
-        "深色",
-        "系统"
-      ]
+      "list": ["浅色", "深色", "系统"]
     },
     "menu": {
       "title": "菜单风格"
@@ -71,17 +77,11 @@
     },
     "box": {
       "title": "盒子样式",
-      "list": [
-        "边框",
-        "阴影"
-      ]
+      "list": ["边框", "阴影"]
     },
     "container": {
       "title": "容器宽度",
-      "list": [
-        "铺满",
-        "定宽"
-      ]
+      "list": ["铺满", "定宽"]
     },
     "basics": {
       "title": "基础配置",
@@ -127,14 +127,8 @@
   "notice": {
     "title": "通知",
     "btnRead": "标为已读",
-    "bar": [
-      "通知",
-      "消息",
-      "代办"
-    ],
-    "text": [
-      "暂无"
-    ],
+    "bar": ["通知", "消息", "代办"],
+    "text": ["暂无"],
     "viewAll": "查看全部"
   },
   "worktab": {

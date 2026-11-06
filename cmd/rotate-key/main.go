@@ -16,6 +16,18 @@ import (
 
 func rotate(directory string) error {
 	current := filepath.Join(directory, "signing.pem")
+	// Reserve the rotation before reading the key that must be archived.
+	temp, e := os.OpenFile(current+".next", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if e != nil {
+		return e
+	}
+	published := false
+	defer func() {
+		if !published {
+			temp.Close()
+			os.Remove(temp.Name())
+		}
+	}()
 	old, e := os.ReadFile(current)
 	if e != nil {
 		return e
@@ -42,10 +54,6 @@ func rotate(directory string) error {
 	if e = os.WriteFile(filename, pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: public}), 0600); e != nil {
 		return e
 	}
-	temp, e := os.OpenFile(current+".next", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if e != nil {
-		return e
-	}
 	_, e = temp.Write(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(next)}))
 	if e == nil {
 		e = temp.Sync()
@@ -57,7 +65,9 @@ func rotate(directory string) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return os.Rename(current+".next", current)
+	e = os.Rename(temp.Name(), current)
+	published = e == nil
+	return e
 }
 func main() {
 	directory := flag.String("data", "data", "issuer data directory; back up before rotation")
