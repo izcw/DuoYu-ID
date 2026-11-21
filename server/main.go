@@ -284,6 +284,7 @@ func (s *Server) routes() http.Handler {
 	m.HandleFunc("GET /api/admin/apps/{id}/users", s.appUsers)
 	m.HandleFunc("PUT /api/admin/settings", s.saveSettings)
 	m.HandleFunc("GET /api/admin/mail-preview", s.mailPreview)
+	m.HandleFunc("POST /api/service/member-status", s.memberStatus)
 	m.HandleFunc("GET /api/service/app", s.serviceApp)
 	m.HandleFunc("GET /api/me/passkeys", s.listPasskeys)
 	m.HandleFunc("POST /api/me/passkeys/begin", s.beginPasskey)
@@ -343,7 +344,7 @@ func (s *Server) routes() http.Handler {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		// Server-to-server sending authenticates exclusively with a scoped Bearer key.
-		serviceMail := (r.Method == "POST" && r.URL.Path == "/api/service/mail") || strings.HasPrefix(r.URL.Path, "/api/management/")
+		serviceMail := (r.Method == "POST" && (r.URL.Path == "/api/service/mail" || r.URL.Path == "/api/service/member-status")) || strings.HasPrefix(r.URL.Path, "/api/management/")
 		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != "GET" && r.Method != "HEAD" && !serviceMail {
 			if !s.allowedBrowserOrigin(r) || r.Header.Get("X-Duoyu-Request") != "1" {
 				fail(w, 403, "请求来源不受信任")

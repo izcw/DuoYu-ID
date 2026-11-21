@@ -166,7 +166,7 @@ func (s *Server) appChecks(w http.ResponseWriter, r *http.Request) {
 	add("客户端类型与平台匹配", a.Platform == "web" || a.Public)
 	valid := len(a.Redirects) > 0
 	for _, v := range a.Redirects {
-		valid = valid && s.validAppRedirect(v, a.Platform)
+		valid = valid && s.validAppRedirect(v, a.Platform, a.Public)
 	}
 	add("登录回调符合当前环境规则", valid)
 	add("S256 PKCE 已强制启用", true)

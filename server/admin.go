@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 
 	"strings"
 	"time"
@@ -163,16 +164,21 @@ func (s *Server) validRedirect(v string) bool {
 	}
 	return u.Scheme == "https" || (s.dev && u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1"))
 }
-func (s *Server) validAppRedirect(v, platform string) bool {
+func (s *Server) validAppRedirect(v, platform string, public bool) bool {
 	if s.validRedirect(v) {
 		return true
 	}
-	if platform != "native" {
+	if platform != "native" && (platform != "web" || public) {
 		return false
 	}
 	u, e := url.Parse(v)
 	if e != nil || u.User != nil || u.Fragment != "" || strings.Contains(v, "*") {
 		return false
+	}
+	if platform == "web" {
+		port, err := strconv.ParseUint(u.Port(), 10, 16)
+		return err == nil && port > 0 && u.Scheme == "http" && u.Host == "127.0.0.1:"+u.Port() &&
+			u.Path != "" && u.RawQuery == "" && !u.ForceQuery && !strings.Contains(v, "#")
 	}
 	if u.Scheme == "http" {
 		return u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
@@ -249,8 +255,8 @@ func (s *Server) saveApp(w http.ResponseWriter, r *http.Request) {
 		a.AllowedOrigins = []string{}
 	}
 	for _, v := range a.Redirects {
-		if !s.validAppRedirect(v, a.Platform) {
-			fail(w, 400, "回调地址须为精确的 HTTPS URL，开发模式允许本机 HTTP")
+		if !s.validAppRedirect(v, a.Platform, a.Public) {
+			fail(w, 400, "请登记精确的登录回调。服务端 Web 项目的本机 HTTP 回调须使用 127.0.0.1、固定端口和路径。")
 			return
 		}
 	}

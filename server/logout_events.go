@@ -63,7 +63,7 @@ func (s *Server) logoutToken(id int64, client, uid, hash string) (string, error)
 	if e != nil {
 		return "", e
 	}
-	body, e := json.Marshal(map[string]any{"iss": s.origin, "aud": []string{client}, "iat": time.Now().Unix(), "jti": "logout-" + strconv.FormatInt(id, 10), "sub": uid, "sid": digest("logout:" + hash), "events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}})
+	body, e := json.Marshal(map[string]any{"iss": s.origin, "aud": []string{client}, "iat": time.Now().Unix(), "exp": time.Now().Add(5 * time.Minute).Unix(), "jti": "logout-" + strconv.FormatInt(id, 10), "sub": uid, "sid": digest("logout:" + hash), "events": map[string]any{"http://schemas.openid.net/event/backchannel-logout": map[string]any{}}})
 	if e != nil {
 		return "", e
 	}

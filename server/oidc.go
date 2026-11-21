@@ -116,6 +116,9 @@ func (a *AuthRequest) GetScopes() []string                { return a.Request.Sco
 func (a *AuthRequest) GetState() string                   { return a.Request.State }
 func (a *AuthRequest) GetSubject() string                 { return a.UserID }
 func (a *AuthRequest) Done() bool                         { return a.Completed }
+
+var errAppDisabled = errors.New("application disabled")
+
 func (s *Server) app(ctx context.Context, id string) (a *App, e error) {
 	a = &App{Development: s.dev}
 	e = s.db.QueryRow(ctx, "SELECT id,name,description,secret_hash,redirects,logout_redirects,public,enabled,restricted,created_at,refresh_enabled,platform,backchannel_logout_uri,logo,allowed_origins,login_methods,management_revision,persistent_login FROM apps WHERE id=$1", id).Scan(&a.ID, &a.Name, &a.Description, &a.Secret, &a.Redirects, &a.LogoutRedirects, &a.Public, &a.Enabled, &a.Restricted, &a.Created, &a.RefreshEnabled, &a.Platform, &a.BackchannelLogoutURI, &a.Logo, &a.AllowedOrigins, &a.LoginMethods, &a.Revision, &a.PersistentLogin)
@@ -123,16 +126,19 @@ func (s *Server) app(ctx context.Context, id string) (a *App, e error) {
 		a.Logo = ""
 	}
 	if e == nil && !a.Enabled {
-		e = errors.New("application disabled")
+		e = errAppDisabled
 	}
 	return
 }
 func (s *Server) GetClientByClientID(ctx context.Context, id string) (op.Client, error) {
 	return s.app(ctx, id)
 }
+func (s *Server) matchesClientSecret(a *App, secret string) bool {
+	return !a.Public && subtle.ConstantTimeCompare([]byte(a.Secret), []byte(s.mac(secret))) == 1
+}
 func (s *Server) AuthorizeClientIDSecret(ctx context.Context, id, secret string) error {
 	a, e := s.app(ctx, id)
-	if e != nil || a.Public || subtle.ConstantTimeCompare([]byte(a.Secret), []byte(s.mac(secret))) != 1 {
+	if e != nil || !s.matchesClientSecret(a, secret) {
 		return errors.New("invalid client")
 	}
 	return nil
@@ -142,10 +148,11 @@ func (s *Server) allowed(ctx context.Context, uid, aid string) bool {
 	return s.db.QueryRow(ctx, projectAccessSQL, uid, aid).Scan(&yes) == nil && yes
 }
 
-const projectAccessSQL = `SELECT EXISTS(SELECT 1 FROM apps a, users u
-	WHERE a.id=$2 AND u.id=$1 AND a.enabled AND u.enabled
+const projectAccessSQL = `SELECT EXISTS(SELECT 1 FROM apps a, users u WHERE a.id=$2 AND u.id=$1 AND ` + projectAccessCondition + `)`
+
+const projectAccessCondition = `a.enabled AND u.enabled
 	AND NOT EXISTS (SELECT 1 FROM app_blacklist b WHERE b.app_id=a.id AND (b.user_id=u.id OR b.email=u.email))
-	AND (NOT a.restricted OR EXISTS(SELECT 1 FROM grants g WHERE g.app_id=a.id AND g.user_id=u.id)))`
+	AND (NOT a.restricted OR EXISTS(SELECT 1 FROM grants g WHERE g.app_id=a.id AND g.user_id=u.id))`
 
 // Hold both policy owners through token commit. The separate access query gets
 // a fresh snapshot after any pending grant, blacklist or account edit completes.

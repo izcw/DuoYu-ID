@@ -162,6 +162,66 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 		return resp.StatusCode, out
 	}
 
+	t.Run("confidential web renewal keeps device binding", func(t *testing.T) {
+		if _, err := s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=true WHERE id=$1", conf); err != nil {
+			t.Fatal(err)
+		}
+		defer s.db.Exec(ctx, "UPDATE apps SET refresh_enabled=false WHERE id=$1", conf)
+		f, _ := begin(conf, "openid profile email offline_access", func(q url.Values) { q.Set("prompt", "consent") })
+		status, c := complete(f)
+		if status != 200 {
+			t.Fatal("consent", status)
+		}
+		status, tokens := exchange(f, c, secret, nil)
+		if status != 200 {
+			t.Fatal("exchange", status)
+		}
+		device := func(tokens map[string]any) string {
+			raw, ok := tokens["id_token"].(string)
+			if !ok {
+				t.Fatal("missing ID token")
+			}
+			id, err := provider.Verifier(&verifierlib.Config{ClientID: conf}).Verify(ctx, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var claims struct{ SID string }
+			if id.Claims(&claims) != nil || claims.SID == "" {
+				t.Fatal("missing device binding")
+			}
+			var exists bool
+			for _, cookie := range jar.Cookies(&url.URL{Scheme: "http", Host: strings.TrimPrefix(origin, "http://"), Path: "/"}) {
+				if cookie.Name == "duoyu_session" && digest("logout:"+digest(cookie.Value)) == claims.SID {
+					exists = true
+				}
+			}
+			if !exists {
+				t.Fatal("session binding differs from center device")
+			}
+			return claims.SID
+		}
+		first := device(tokens)
+		form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tokens["refresh_token"].(string)}}
+		r, _ := http.NewRequest("POST", discovery["token_endpoint"].(string), strings.NewReader(form.Encode()))
+		r.SetBasicAuth(conf, secret)
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var next map[string]any
+		if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&next) != nil || next["refresh_token"] == tokens["refresh_token"] {
+			t.Fatal("rotation failed", resp.StatusCode)
+		}
+		if device(next) != first {
+			t.Fatal("renewed session changed device")
+		}
+		if status, profile := info(next["access_token"].(string)); status != 200 || profile["sub"] != uid {
+			t.Fatal("renewed UserInfo", status)
+		}
+	})
+
 	t.Run("existing token reports current project role", func(t *testing.T) {
 		f, c := code(pub, "openid profile")
 		status, out := exchange(f, c, "", nil)
@@ -992,12 +1052,12 @@ func testClientMatrix(t *testing.T, s *Server, origin string) {
 			t.Fatal("production loopback behavior changed")
 		}
 		for _, v := range []string{"http://127.0.0.1:8199/callback", "http://[::1]:8199/callback", "com.example.app:/callback"} {
-			if !production.validAppRedirect(v, "native") {
+			if !production.validAppRedirect(v, "native", true) {
 				t.Fatal("native redirect rejected", v)
 			}
 		}
 		for _, v := range []string{"http://evil.example/callback", "http://localhost:8199/callback", "javascript:alert(1)", "com.example.app://evil/callback"} {
-			if production.validAppRedirect(v, "native") {
+			if production.validAppRedirect(v, "native", true) {
 				t.Fatal("unsafe native callback", v)
 			}
 		}

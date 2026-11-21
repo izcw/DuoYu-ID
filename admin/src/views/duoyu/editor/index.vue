@@ -346,6 +346,7 @@
                 :rows="4"
                 placeholder="https://app.example.com/auth/callback"
             /></el-form-item>
+            <CallbackCheck v-if="!form.public" :registered="lines(form.redirectText)" />
             <el-form-item label="允许的浏览器请求来源 · 每行一个"
               ><el-input
                 v-model="form.originText"
@@ -440,6 +441,7 @@
   </div>
 </template>
 <script setup lang="ts">
+  import CallbackCheck from './CallbackCheck.vue'
   import { ref, computed, watch, onBeforeUnmount } from 'vue'
   import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'

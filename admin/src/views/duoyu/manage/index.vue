@@ -33,10 +33,10 @@
           :index="(index: number) => (page - 1) * 20 + index + 1"
         /><el-table-column label="账号" min-width="220"
           ><template #default="{ row }"
-            ><div style="display: flex; gap: 12px; align-items: center"
+            ><div class="dy-account-identity"
               ><el-avatar :src="row.avatar || '/avatar-default.svg'" :size="36"
                 ><img src="/avatar-default.svg" alt="默认头像" /></el-avatar
-              ><div
+              ><div class="dy-account-info"
                 ><b>{{ row.name }}</b
                 ><span v-if="row.admin" class="dy-super-badge">超级管理员</span
                 ><div class="dy-code">ID {{ row.account_id }}</div

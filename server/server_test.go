@@ -97,6 +97,7 @@ func TestIntegration(t *testing.T) {
 	srv.Listener = listener
 	srv.Start()
 	defer srv.Close()
+	t.Run("Project membership and independent credentials", func(t *testing.T) { testMemberStatus(t, s) })
 	t.Run("Legal consent and documents", func(t *testing.T) { testLegalConsent(t, s, origin) })
 	t.Run("Queued project mail authorization", func(t *testing.T) { testQueuedMailAuthorization(t, s, origin) })
 	t.Run("Project blacklist", func(t *testing.T) { testProjectBlacklist(t, s, origin) })
