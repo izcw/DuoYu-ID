@@ -91,7 +91,7 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	d.ResponseTypesSupported = []string{"code"}
 	d.GrantTypesSupported = []oidc.GrantType{oidc.GrantTypeCode, oidc.GrantTypeRefreshToken}
 	d.ScopesSupported = []string{"openid", "profile", "email", "offline_access"}
-	d.ClaimsSupported = []string{"iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp", "at_hash", "sid", "name", "picture", "email", "email_verified"}
+	d.ClaimsSupported = []string{"iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp", "at_hash", "sid", "name", "picture", "email", "email_verified", "roles", "project_role"}
 	d.DeviceAuthorizationEndpoint = ""
 	d.CheckSessionIframe = ""
 	op.Discover(w, d)

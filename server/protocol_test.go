@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,12 @@ func testProtocolContract(t *testing.T, s *Server, origin string) {
 	for key, want := range map[string][]any{"response_types_supported": {"code"}, "grant_types_supported": {"authorization_code", "refresh_token"}, "scopes_supported": {"openid", "profile", "email", "offline_access"}, "code_challenge_methods_supported": {"S256"}} {
 		if !reflect.DeepEqual(d[key], want) {
 			t.Fatalf("%s: %v", key, d[key])
+		}
+	}
+	claims, _ := d["claims_supported"].([]any)
+	for _, key := range []string{"roles", "project_role"} {
+		if !slices.Contains(claims, any(key)) {
+			t.Fatalf("discovery missing %s", key)
 		}
 	}
 	for _, key := range []string{"device_authorization_endpoint", "check_session_iframe"} {
